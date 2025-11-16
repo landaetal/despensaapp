@@ -2581,7 +2581,7 @@ export default function DespensaApp() {
         <Login onLogin={setEmail} />
       )}
       <footer className="text-center text-xs text-gray-500 py-6">
-        MVP local • Próximo paso: backend y multi-sucursal 😎
+        APP Local de Despensa v1
       </footer>
     </div>
   );
