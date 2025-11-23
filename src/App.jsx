@@ -1,58 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * DespensaApp – MVP
+ * DespensaApp – Versión Final (Producción)
  * -----------------------------------------
- * ✔ Login simple por email (localStorage por usuario)
- * ✔ Productos con EAN, nombre, precio
- * ✔ No permite EAN duplicados (alta manual)
- * ✔ Importar productos desde CSV (ean,nombre,precio)
- * ✔ Listado con búsqueda + precio editable inline
- * ✔ Precio PedidosYa / Rappi calculados desde el precio base
- * ✔ Productos seleccionables para generar etiquetas e imprimir PDF
- * ✔ Eliminar productos de forma masiva usando la misma selección
- * ✔ Nueva venta:
- *    - Buscar por código EAN (sin distinguir mayúsculas/minúsculas)
- *    - Si el producto tiene precio 0 → ventana emergente SIEMPRE, sin actualizar el catálogo
- *    - Métodos de pago: efectivo, MercadoPago, posnet, fiado
- * ✔ Ventas normales → van a "ventas" (cierre diario y resumen histórico)
- * ✔ Ventas en fiado:
- *    - No se guardan en "ventas" → no impactan cierre diario ni resumen histórico
- *    - Se guardan por persona en "fiados" (con detalle de productos)
- *    - Para productos con precio 0, se guarda precioUnitario y NO se actualiza nunca
- * ✔ Fiados:
- *    - Personas con deudas, detalle de compras fiadas y abonos
- *    - Saldo = sum(productos * cantidades) usando:
- *         - precioUnitario si existe (congelado)
- *         - o precio actual del producto si no tiene precioUnitario
- *    - Abonos protegidos con contraseña (19256436)
- *    - Muestra EAN + nombre de producto en detalle
- *    - Si saldo queda en 0 → se borra la persona de fiados
- * ✔ Ventas recientes:
- *    - Se puede cambiar el método de pago sin borrar la venta
- * ✔ Compras / Gastos:
- *    - Registrar tipo (compra/gasto), proveedor, descripción, monto (con decimales)
- *    - Lista de proveedores reutilizable (datalist)
- * ✔ Cierre diario:
- *    - Totales por método de pago (solo ventas normales)
- *    - Total ventas, compras, gastos, neto del día
- *    - Dinero en caja (día anterior) desde cierre anterior
- *    - Efectivo Total Disponible = efectivo día + caja día anterior + PedidosYa - caja próximo día
- *    - Cierre definitivo bloquea edición de efectivo
- * ✔ Resumen histórico:
- *    - Rango de fechas
- *    - Totales de ventas, compras, gastos
- *    - Total general (ventas - compras - gastos)
- *    - Sin detalle de ventas, solo detalle de compras/gastos
- *    - Botón Imprimir / PDF con nombre y logo de la despensa
- * ✔ Ranking de ventas:
- *    - Rango de fechas
- *    - Agrupa por producto
- *    - Ordenado por cantidad vendida
- *    - Porcentaje de participación por cantidad
- * ✔ Importar/Exportar:
- *    - Importar CSV de productos
- *    - Exportar respaldo JSON (incluye todo)
+ * ✔ Diseño visual completo (V3).
+ * ✔ Funcionalidades avanzadas (Arqueo, Reabrir Caja, CSV, Edición).
+ * ✔ FIX: Condición de carrera solucionada (Pantalla de carga segura).
  */
 
 // ---- Utilidades ----
@@ -67,18 +20,16 @@ const currency = (n) =>
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Precio para PedidosYa: precio / (1 - 29.5%) ⇒ redondeado hacia arriba
 const pedidosYaPrice = (precio) => {
   const base = Number(precio) || 0;
   if (base <= 0) return 0;
-  return Math.ceil(base / (1 - 0.295)); // 0.705
+  return Math.ceil(base / (1 - 0.295));
 };
 
-// Precio para Rappi: precio / (1 - 20%) ⇒ redondeado hacia arriba
 const rappiPrice = (precio) => {
   const base = Number(precio) || 0;
   if (base <= 0) return 0;
-  return Math.ceil(base / (1 - 0.2)); // 0.8
+  return Math.ceil(base / (1 - 0.2));
 };
 
 const parseMoneyInput = (v) => {
@@ -87,7 +38,9 @@ const parseMoneyInput = (v) => {
 };
 
 function download(filename, text) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const blob = new Blob(["\uFEFF" + text], {
+    type: "text/plain;charset=utf-8",
+  });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -128,8 +81,6 @@ function parseCSV(raw) {
 }
 
 // ---- Fiados: cálculo de saldo ----
-// Usa precioUnitario si fue guardado (para productos con precio 0 al momento del fiado),
-// o el precio actual del producto si no hay precioUnitario.
 function computeSaldoPersona(fiador, productos) {
   const map = new Map((productos || []).map((p) => [p.ean, p]));
   let totalCargos = 0;
@@ -138,27 +89,23 @@ function computeSaldoPersona(fiador, productos) {
     for (const item of cargo.items || []) {
       const prod = map.get(item.ean);
       const qty = Number(item.qty) || 0;
-
       const precioBase =
         typeof item.precioUnitario === "number"
           ? item.precioUnitario
           : prod
           ? Number(prod.precio) || 0
           : 0;
-
       totalCargos += precioBase * qty;
     }
   }
-
   const totalAbonos = (fiador.abonos || []).reduce(
     (a, b) => a + (b.monto || 0),
     0
   );
-
   return totalCargos - totalAbonos;
 }
 
-// ---- Almacenamiento por usuario ----
+// ---- Almacenamiento por usuario (CON FIX DE CARGA) ----
 function useUserStorage(email) {
   const [state, setState] = useState({
     productos: [],
@@ -170,17 +117,19 @@ function useUserStorage(email) {
     settings: {},
   });
 
-  // Cargar estado inicial desde el backend cuando cambia el email
+  // Bandera de seguridad para evitar sobrescritura
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  // 1. Carga inicial
   useEffect(() => {
     if (!email) return;
-
+    setIsLoaded(false); // Bloquear guardado
     const controller = new AbortController();
 
     async function fetchState() {
       try {
         const res = await fetch(
           `${API_URL}/estado?email=${encodeURIComponent(email)}`,
-
           { signal: controller.signal }
         );
         if (!res.ok) throw new Error("Error al cargar estado");
@@ -195,34 +144,30 @@ function useUserStorage(email) {
           settings: {},
           ...(data || {}),
         });
+        setIsLoaded(true); // Habilitar guardado
       } catch (err) {
         if (err.name === "AbortError") return;
-        console.error("Error cargando estado desde backend:", err);
-        // Si falla, arrancamos con estado vacío
-        setState({
-          productos: [],
-          ventas: [],
-          gastos: [],
-          proveedores: [],
-          cierres: {},
-          fiados: [],
-          settings: {},
-        });
+        console.error("Error cargando estado:", err);
+        // Si falla la red gravemente, no habilitamos isLoaded para proteger datos locales vacíos.
+        // Si es un 404 (usuario nuevo), el backend debería devolver JSON vacío y entrar al try.
+        if (err.message !== "Error al cargar estado") {
+           // Error de conexión, no hacemos nada (se queda cargando o muestra error)
+        } else {
+           // Si el backend responde error explícito, asumimos vacío seguro
+           setIsLoaded(true);
+        }
       }
     }
-
     fetchState();
-
     return () => controller.abort();
   }, [email]);
 
-  // Guardar en el backend cada vez que cambie el estado (si hay email)
+  // 2. Guardado automático
   useEffect(() => {
     if (!email) return;
+    if (!isLoaded) return; // SI NO ESTÁ CARGADO, NO GUARDAR
 
     const controller = new AbortController();
-
-    // Pequeño debounce para no enviar en cada tecla
     const timeout = setTimeout(async () => {
       try {
         await fetch(
@@ -236,20 +181,19 @@ function useUserStorage(email) {
         );
       } catch (err) {
         if (err.name === "AbortError") return;
-        console.error("Error guardando estado en backend:", err);
+        console.error("Error guardando estado:", err);
       }
-    }, 500);
-
+    }, 1000); // Debounce de 1s
     return () => {
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [email, state]);
+  }, [email, state, isLoaded]);
 
-  return [state, setState];
+  return [state, setState, isLoaded];
 }
 
-// ---- Componentes de layout ----
+// ---- Componentes de layout (Estilo Original) ----
 function Section({ title, desc, children, right }) {
   return (
     <div className="bg-white/70 backdrop-blur shadow-sm rounded-2xl p-5 border border-gray-200">
@@ -303,8 +247,7 @@ function Login({ onLogin }) {
       >
         <h1 className="text-2xl font-semibold mb-2">Ingresar</h1>
         <p className="text-sm text-gray-600 mb-4">
-          Por ahora solo pedimos tu email (MVP). Más adelante agregamos
-          verificación.
+          Por ahora solo pedimos tu email (MVP).
         </p>
         <label className="block text-sm text-gray-700 mb-1">Email</label>
         <input
@@ -320,6 +263,168 @@ function Login({ onLogin }) {
         </button>
       </form>
     </div>
+  );
+}
+
+// ---- Componente: Asistente de Arqueo (Modal) ----
+function ArqueoCaja({ onClose, onConfirm }) {
+  const billetes = [20000, 10000, 2000, 1000, 500, 200, 100, 50, 20, 10];
+  const [counts, setCounts] = useState({});
+
+  const total = useMemo(() => {
+    return billetes.reduce((acc, b) => acc + b * (counts[b] || 0), 0);
+  }, [counts]);
+
+  const handleChange = (billete, val) => {
+    const qty = parseInt(val || "0", 10);
+    setCounts((prev) => ({ ...prev, [billete]: qty }));
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center p-4 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] border border-gray-200">
+        <div className="p-4 border-b flex justify-between items-center bg-indigo-50">
+          <h3 className="font-semibold text-indigo-900 flex items-center gap-2">
+            <span>🧮</span> Asistente de Arqueo
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-700 w-8 h-8 flex items-center justify-center rounded-full hover:bg-indigo-100"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="p-4 overflow-y-auto flex-1">
+          <p className="text-sm text-gray-500 mb-4">
+            Ingresa la cantidad de billetes contados:
+          </p>
+          <div className="space-y-2">
+            {billetes.map((b) => (
+              <div key={b} className="flex items-center gap-3">
+                <div className="w-24 text-right font-medium text-gray-700">
+                  ${b}
+                </div>
+                <span className="text-gray-400 text-xs">x</span>
+                <input
+                  type="number"
+                  min="0"
+                  className="flex-1 border rounded-lg px-3 py-1.5 text-right focus:ring-2 focus:ring-indigo-200 outline-none"
+                  placeholder="0"
+                  value={counts[b] || ""}
+                  onChange={(e) => handleChange(b, e.target.value)}
+                />
+                <div className="w-24 text-right text-gray-900 font-mono">
+                  {currency(b * (counts[b] || 0))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="p-4 border-t bg-gray-50">
+          <div className="flex justify-between items-center mb-4">
+            <span className="text-lg font-bold text-gray-700">
+              Total contado:
+            </span>
+            <span className="text-2xl font-bold text-indigo-600">
+              {currency(total)}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              onClick={onClose}
+              className="py-2 border rounded-xl hover:bg-gray-100 text-gray-700 font-medium"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={() => onConfirm(total)}
+              className="py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-medium shadow-sm"
+            >
+              Usar Total
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- Componentes de Edición Inline ----
+function InlineText({ value, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value);
+
+  useEffect(() => setVal(value), [value]);
+
+  const commit = () => {
+    if (val.trim() !== "") {
+      onChange(val.trim());
+    } else {
+      setVal(value);
+    }
+    setEditing(false);
+  };
+
+  if (!editing) {
+    return (
+      <div
+        onClick={() => setEditing(true)}
+        className="cursor-pointer hover:bg-gray-100 px-2 py-1 rounded border border-transparent hover:border-gray-300 truncate transition-colors"
+        title="Clic para editar nombre"
+      >
+        {value}
+      </div>
+    );
+  }
+
+  return (
+    <input
+      autoFocus
+      className="w-full border rounded px-2 py-1 text-sm focus:ring-2 focus:ring-indigo-200 outline-none"
+      value={val}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === "Enter" && commit()}
+    />
+  );
+}
+
+function InlineMoney({ value, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(value));
+  useEffect(() => setVal(String(value)), [value]);
+  const commit = () => {
+    const num = parseFloat(val.replace(/\./g, "").replace(",", "."));
+    if (!isFinite(num)) return alert("Valor inválido");
+    onChange(+num);
+    setEditing(false);
+  };
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="px-2 py-1 rounded-lg hover:bg-gray-100 font-medium text-gray-900"
+      >
+        {currency(value)}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-2">
+      <input
+        autoFocus
+        className="w-28 border rounded-lg px-2 py-1 text-right focus:ring-2 focus:ring-indigo-200 outline-none"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+      />
+      <button
+        onClick={commit}
+        className="text-indigo-600 hover:underline text-xs font-semibold"
+      >
+        OK
+      </button>
+    </span>
   );
 }
 
@@ -342,6 +447,13 @@ function Productos({ data, setData }) {
     setData((s) => ({
       ...s,
       productos: s.productos.map((p) => (p.id === id ? { ...p, precio } : p)),
+    }));
+  };
+
+  const updateNombre = (id, nombre) => {
+    setData((s) => ({
+      ...s,
+      productos: s.productos.map((p) => (p.id === id ? { ...p, nombre } : p)),
     }));
   };
 
@@ -408,21 +520,29 @@ function Productos({ data, setData }) {
     }
   };
 
+  const downloadList = () => {
+    if (!data.productos.length) return alert("No hay productos para descargar.");
+    const header = "ean,nombre,precio\n";
+    const rows = data.productos
+      .map((p) => `${p.ean},${p.nombre},${p.precio}`)
+      .join("\n");
+    download(
+      `lista-productos-${new Date().toISOString().slice(0, 10)}.csv`,
+      header + rows
+    );
+  };
+
   const generateLabels = () => {
     const selected = data.productos.filter((p) => selectedIds.includes(p.id));
     if (!selected.length) {
       alert("Selecciona al menos un producto para generar etiquetas.");
       return;
     }
-
     const w = window.open("", "_blank");
-    if (!w) {
-      alert(
-        "No se pudo abrir la ventana de impresión. Revisa el bloqueador de ventanas emergentes."
+    if (!w)
+      return alert(
+        "No se pudo abrir la ventana. Revisa el bloqueador de popups."
       );
-      return;
-    }
-
     const labelsHtml = selected
       .map((p) => {
         const priceText = currency(p.precio);
@@ -435,66 +555,32 @@ function Productos({ data, setData }) {
         `;
       })
       .join("");
-
     const html = `
       <!DOCTYPE html>
       <html lang="es">
       <head>
         <meta charset="utf-8" />
-        <title>Etiquetas de precios</title>
+        <title>Etiquetas</title>
         <style>
           * { box-sizing: border-box; }
-          body {
-            margin: 0;
-            padding: 16px;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          }
-          .labels {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-          }
+          body { margin: 0; padding: 16px; font-family: sans-serif; }
+          .labels { display: flex; flex-wrap: wrap; gap: 12px; }
           .label {
-            width: 180px;
-            height: 110px;
-            border: 2px solid #111827;
-            border-radius: 10px;
-            padding: 8px 10px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
+            width: 180px; height: 110px; border: 2px solid #111827;
+            border-radius: 10px; padding: 8px 10px;
+            display: flex; flex-direction: column; justify-content: space-between;
           }
-          .label-name {
-            font-size: 12px;
-            font-weight: 600;
-            color: #111827;
-            line-height: 1.2;
-          }
-          .label-price {
-            font-size: 26px;
-            font-weight: 800;
-            text-align: center;
-            color: #111827;
-            margin-top: 6px;
-          }
-          .label-ean {
-            font-size: 10px;
-            color: #4b5563;
-            text-align: right;
-          }
-          @page {
-            margin: 10mm;
-          }
+          .label-name { font-size: 12px; font-weight: 600; color: #111827; }
+          .label-price { font-size: 26px; font-weight: 800; text-align: center; color: #111827; }
+          .label-ean { font-size: 10px; color: #4b5563; text-align: right; }
+          @page { margin: 10mm; }
         </style>
       </head>
       <body onload="window.print()">
-        <div class="labels">
-          ${labelsHtml}
-        </div>
+        <div class="labels">${labelsHtml}</div>
       </body>
       </html>
     `;
-
     w.document.open();
     w.document.write(html);
     w.document.close();
@@ -503,18 +589,25 @@ function Productos({ data, setData }) {
   return (
     <Section
       title="Productos"
-      desc="Busca por código o nombre. Edita precios haciendo clic en el valor. No permite EAN duplicados."
+      desc="Busca por código o nombre. Haz clic en el nombre o precio para editarlos."
       right={
         <div className="flex gap-2">
           <button
             onClick={addManual}
-            className="px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+            className="px-3 py-1.5 rounded-xl border hover:bg-gray-50 transition-colors"
           >
             + Agregar
           </button>
           <button
+            onClick={downloadList}
+            className="px-3 py-1.5 rounded-xl border hover:bg-gray-50 transition-colors"
+            title="Descargar lista completa en CSV"
+          >
+            ⬇ Lista (CSV)
+          </button>
+          <button
             onClick={generateLabels}
-            className="px-3 py-1.5 rounded-xl border border-indigo-400 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-sm"
+            className="px-3 py-1.5 rounded-xl border border-indigo-400 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-sm transition-colors"
           >
             Etiquetas (PDF)
           </button>
@@ -522,13 +615,13 @@ function Productos({ data, setData }) {
             onClick={removeSelected}
             disabled={!selectedIds.length}
             className={
-              "px-3 py-1.5 rounded-xl border text-sm " +
+              "px-3 py-1.5 rounded-xl border text-sm transition-colors " +
               (selectedIds.length
                 ? "border-red-400 text-red-700 bg-red-50 hover:bg-red-100"
                 : "border-gray-200 text-gray-400 bg-gray-100 cursor-not-allowed")
             }
           >
-            Eliminar seleccionados
+            Eliminar
           </button>
         </div>
       }
@@ -536,7 +629,7 @@ function Productos({ data, setData }) {
       <div className="flex items-center gap-3 mb-3">
         <input
           placeholder="Buscar por código o nombre..."
-          className="flex-1 border rounded-xl px-3 py-2"
+          className="flex-1 border rounded-xl px-3 py-2 focus:ring-2 focus:ring-indigo-200 outline-none"
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
@@ -558,8 +651,8 @@ function Productos({ data, setData }) {
               <th className="text-left p-2">EAN</th>
               <th className="text-left p-2">Nombre</th>
               <th className="text-right p-2">Precio</th>
-              <th className="text-right p-2">Precio PedidosYa</th>
-              <th className="text-right p-2">Precio Rappi</th>
+              <th className="text-right p-2">PedidosYa</th>
+              <th className="text-right p-2">Rappi</th>
               <th className="text-right p-2">Acciones</th>
             </tr>
           </thead>
@@ -574,7 +667,12 @@ function Productos({ data, setData }) {
                   />
                 </td>
                 <td className="p-2 font-mono">{p.ean}</td>
-                <td className="p-2">{p.nombre}</td>
+                <td className="p-2">
+                  <InlineText
+                    value={p.nombre}
+                    onChange={(n) => updateNombre(p.id, n)}
+                  />
+                </td>
                 <td className="p-2 text-right">
                   <InlineMoney
                     value={p.precio}
@@ -597,13 +695,6 @@ function Productos({ data, setData }) {
                 </td>
               </tr>
             ))}
-            {!results.length && (
-              <tr>
-                <td colSpan={7} className="p-6 text-center text-gray-500">
-                  Sin resultados
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
@@ -617,42 +708,6 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
-}
-
-function InlineMoney({ value, onChange }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(String(value));
-  useEffect(() => setVal(String(value)), [value]);
-  const commit = () => {
-    const num = parseFloat(val.replace(/\./g, "").replace(",", "."));
-    if (!isFinite(num)) return alert("Valor inválido");
-    onChange(+num);
-    setEditing(false);
-  };
-  if (!editing) {
-    return (
-      <button
-        onClick={() => setEditing(true)}
-        className="px-2 py-1 rounded-lg hover:bg-gray-100 font-medium"
-      >
-        {currency(value)}
-      </button>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-2">
-      <input
-        autoFocus
-        className="w-28 border rounded-lg px-2 py-1 text-right"
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && commit()}
-      />
-      <button onClick={commit} className="text-indigo-600 hover:underline">
-        Guardar
-      </button>
-    </span>
-  );
 }
 
 // ---- Importar / Exportar ----
@@ -737,8 +792,7 @@ function ImportExport({ data, setData }) {
           </button>
         </div>
         <p className="text-sm text-gray-600">
-          Formato esperado: <code>ean,nombre,precio</code>. Ejemplo:{" "}
-          <code className="ml-1">7790001000012,Leche entera 1L,1899</code>
+          Formato esperado: <code>ean,nombre,precio</code>.
         </p>
       </div>
     </Section>
@@ -748,7 +802,7 @@ function ImportExport({ data, setData }) {
 // ---- Nueva venta (incluye Fiado) ----
 function NuevaVenta({ data, setData }) {
   const [codigo, setCodigo] = useState("");
-  const [items, setItems] = useState([]); // {id, ean, nombre, precio, qty}
+  const [items, setItems] = useState([]);
   const [metodo, setMetodo] = useState("efectivo");
 
   const addByCode = () => {
@@ -764,31 +818,21 @@ function NuevaVenta({ data, setData }) {
     }
 
     let precio = prod.precio;
-
-    // Si el producto tiene precio 0, pedirlo manualmente (máx. 10 dígitos) y NO actualizar el catálogo
     if (!precio || +precio === 0) {
       let manual = null;
       while (manual === null) {
         const input = prompt(
-          `El producto "${prod.nombre}" tiene precio 0.\n\nIngresa el precio (hasta 10 dígitos, sin símbolo $):`,
+          `El producto "${prod.nombre}" tiene precio 0.\nIngresa el precio:`,
           ""
         );
-        if (input === null) {
-          return;
-        }
+        if (input === null) return;
         const cleaned = input.replace(/[^\d.,]/g, "");
         const digits = cleaned.replace(/\D/g, "");
-        if (!digits) {
-          alert("Ingresa un número válido.");
+        if (!digits || digits.length > 10) {
+          alert("Precio inválido (máx 10 dígitos).");
           continue;
         }
-        if (digits.length > 10) {
-          alert("Máximo 10 dígitos para el precio.");
-          continue;
-        }
-        const num = parseFloat(
-          cleaned.replace(/\./g, "").replace(",", ".")
-        );
+        const num = parseFloat(cleaned.replace(/\./g, "").replace(",", "."));
         if (!isFinite(num) || num < 0) {
           alert("Ingresa un precio válido (>= 0).");
           continue;
@@ -796,7 +840,6 @@ function NuevaVenta({ data, setData }) {
         manual = num;
       }
       precio = manual;
-      // Importante: no actualizamos el precio del producto en el catálogo.
     }
 
     setItems((arr) => {
@@ -833,56 +876,36 @@ function NuevaVenta({ data, setData }) {
     );
   };
 
-  const remove = (id) =>
-    setItems((arr) => arr.filter((i) => i.id !== id));
+  const remove = (id) => setItems((arr) => arr.filter((i) => i.id !== id));
 
   const finalizar = () => {
     if (!items.length) return alert("Agrega artículos a la venta.");
     for (const it of items) {
       if (!isFinite(+it.precio) || +it.precio < 0) {
-        alert("Revisa los precios ingresados (no pueden ser negativos).");
-        return;
+        return alert("Revisa los precios ingresados.");
       }
     }
 
     const ahora = new Date().toISOString();
+    const todayISO = new Date().toISOString().slice(0, 10);
 
-    // Caso FIADO: no se guarda en ventas, se guarda en fiados
+    // IMPORTANTE: Determinar la "Fecha de Caja" (Logical Date)
+    const fechaCaja = data.settings?.fechaCajaAbierta || todayISO;
+
     if (metodo === "fiado") {
-      const nombre = (prompt(
-        "¿A nombre de quién queda registrado el fiado?"
-      ) || "").trim();
-      if (!nombre) {
-        alert("Debes indicar un nombre para registrar el fiado.");
-        return;
-      }
+      const nombre = (prompt("¿A nombre de quién?") || "").trim();
+      if (!nombre) return alert("Falta el nombre.");
 
-      // Armamos los ítems del fiado:
-      // - Si el producto en el catálogo tiene precio 0 → guardamos precioUnitario (congelado)
-      // - Si no, solo guardamos ean y qty (se recalculará con precio actual)
       const cargoItems = items.map((i) => {
         const prod = data.productos.find((p) => p.ean === i.ean);
         const prodPrecio = prod ? Number(prod.precio) || 0 : 0;
-
         if (prodPrecio === 0) {
-          return {
-            ean: i.ean,
-            qty: i.qty,
-            precioUnitario: i.precio, // se congela este precio
-          };
+          return { ean: i.ean, qty: i.qty, precioUnitario: i.precio };
         }
-
-        return {
-          ean: i.ean,
-          qty: i.qty,
-        };
+        return { ean: i.ean, qty: i.qty };
       });
 
-      const cargo = {
-        id: uid(),
-        fecha: ahora,
-        items: cargoItems,
-      };
+      const cargo = { id: uid(), fecha: ahora, items: cargoItems };
 
       setData((s) => {
         const fiados = [...(s.fiados || [])];
@@ -902,10 +925,11 @@ function NuevaVenta({ data, setData }) {
       return;
     }
 
-    // Venta normal (no fiado) → va a "ventas"
+    // Venta normal
     const venta = {
       id: uid(),
       fecha: ahora,
+      fechaCaja, // Guardamos la fecha lógica de la caja
       items,
       metodo,
       total,
@@ -920,12 +944,12 @@ function NuevaVenta({ data, setData }) {
       <div className="md:col-span-2">
         <Section
           title="Nueva venta"
-          desc="Escanea o ingresa el código EAN del artículo. El código puede ser numérico o una palabra (no distingue mayúsculas/minúsculas)."
+          desc="Escanea o ingresa el código EAN del artículo."
         >
           <div className="flex items-center gap-2 mb-3">
             <input
               placeholder="Código EAN o palabra"
-              className="flex-1 border rounded-xl px-3 py-2 font-mono"
+              className="flex-1 border rounded-xl px-3 py-2 font-mono focus:ring-2 focus:ring-indigo-200 outline-none"
               value={codigo}
               onChange={(e) => setCodigo(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && addByCode()}
@@ -992,48 +1016,23 @@ function NuevaVenta({ data, setData }) {
         </Section>
       </div>
       <div>
-        <Section
-          title="Resumen"
-          desc="Selecciona el método de pago. Si es Fiado, se registrará la deuda por persona."
-        >
+        <Section title="Resumen">
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center gap-2 border rounded-xl p-2">
-                <input
-                  type="radio"
-                  name="metodo"
-                  checked={metodo === "efectivo"}
-                  onChange={() => setMetodo("efectivo")}
-                />
-                Efectivo
-              </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
-                <input
-                  type="radio"
-                  name="metodo"
-                  checked={metodo === "mercadopago"}
-                  onChange={() => setMetodo("mercadopago")}
-                />
-                MercadoPago
-              </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
-                <input
-                  type="radio"
-                  name="metodo"
-                  checked={metodo === "posnet"}
-                  onChange={() => setMetodo("posnet")}
-                />
-                Posnet
-              </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
-                <input
-                  type="radio"
-                  name="metodo"
-                  checked={metodo === "fiado"}
-                  onChange={() => setMetodo("fiado")}
-                />
-                Fiado
-              </label>
+              {["efectivo", "mercadopago", "posnet", "fiado"].map((m) => (
+                <label
+                  key={m}
+                  className="flex items-center gap-2 border rounded-xl p-2 capitalize cursor-pointer hover:bg-gray-50"
+                >
+                  <input
+                    type="radio"
+                    name="metodo"
+                    checked={metodo === m}
+                    onChange={() => setMetodo(m)}
+                  />
+                  {m}
+                </label>
+              ))}
             </div>
             <div className="flex items-center justify-between text-lg font-semibold">
               <span>Total</span>
@@ -1041,7 +1040,7 @@ function NuevaVenta({ data, setData }) {
             </div>
             <button
               onClick={finalizar}
-              className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 disabled:opacity-50"
+              className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 disabled:opacity-50 transition-colors shadow-md"
               disabled={!items.length}
             >
               {metodo === "fiado" ? "Registrar fiado" : "Registrar venta"}
@@ -1075,52 +1074,67 @@ function VentasRecientes({ data, setData }) {
       <div className="space-y-3 max-h-[30vh] overflow-auto pr-1">
         {data.ventas.length === 0 && (
           <p className="text-sm text-gray-500">
-            Aún no hay ventas registradas (se muestran solo las que no son fiado).
+            Aún no hay ventas registradas.
           </p>
         )}
-        {data.ventas.map((v) => (
-          <div key={v.id} className="border rounded-xl p-3">
-            <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-              <span>
-                {new Date(v.fecha).toLocaleString("es-AR", {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })}
-              </span>
-              <select
-                className="border rounded-lg px-2 py-1 text-xs uppercase"
-                value={v.metodo}
-                onChange={(e) => actualizarMetodo(v.id, e.target.value)}
-              >
-                <option value="efectivo">efectivo</option>
-                <option value="mercadopago">mercadopago</option>
-                <option value="posnet">posnet</option>
-              </select>
-            </div>
-            <div className="text-sm">
-              {v.items.map((i) => (
-                <div key={i.id} className="flex items-center justify-between">
-                  <span className="truncate mr-2">
-                    {i.nombre} x{i.qty}
+        {data.ventas.map((v) => {
+          // Verificar si la caja de esta venta ya está cerrada
+          const fechaRef = v.fechaCaja || v.fecha.slice(0, 10);
+          const isCerrado = data.cierres?.[fechaRef]?.cerrado;
+
+          return (
+            <div key={v.id} className="border rounded-xl p-3 relative">
+              <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
+                <span>
+                  {new Date(v.fecha).toLocaleString("es-AR", {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                </span>
+                {isCerrado ? (
+                  <span className="text-xs bg-gray-200 text-gray-600 px-2 py-1 rounded uppercase font-bold">
+                    {v.metodo} (Cerrado)
                   </span>
-                  <span>{currency(i.precio * i.qty)}</span>
+                ) : (
+                  <select
+                    className="border rounded-lg px-2 py-1 text-xs uppercase"
+                    value={v.metodo}
+                    onChange={(e) => actualizarMetodo(v.id, e.target.value)}
+                  >
+                    <option value="efectivo">efectivo</option>
+                    <option value="mercadopago">mercadopago</option>
+                    <option value="posnet">posnet</option>
+                  </select>
+                )}
+              </div>
+              <div className="text-sm">
+                {v.items.map((i) => (
+                  <div key={i.id} className="flex items-center justify-between">
+                    <span className="truncate mr-2">
+                      {i.nombre} x{i.qty}
+                    </span>
+                    <span>{currency(i.precio * i.qty)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex items-center justify-between mt-2 font-semibold">
+                <span>Total</span>
+                <span>{currency(v.total)}</span>
+              </div>
+
+              {!isCerrado && (
+                <div className="flex justify-end mt-2">
+                  <button
+                    onClick={() => eliminarVenta(v.id)}
+                    className="text-xs text-red-600 hover:underline"
+                  >
+                    Eliminar venta
+                  </button>
                 </div>
-              ))}
+              )}
             </div>
-            <div className="flex items-center justify-between mt-2 font-semibold">
-              <span>Total</span>
-              <span>{currency(v.total)}</span>
-            </div>
-            <div className="flex justify-end mt-2">
-              <button
-                onClick={() => eliminarVenta(v.id)}
-                className="text-xs text-red-600 hover:underline"
-              >
-                Eliminar venta
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Section>
   );
@@ -1136,17 +1150,16 @@ function ComprasGastos({ data, setData }) {
   const agregar = () => {
     const nombreProveedor = proveedor.trim();
     const n = parseMoneyInput(monto);
-    if (!nombreProveedor) {
-      alert("Ingresa el proveedor");
-      return;
-    }
-    if (!isFinite(n) || n <= 0) {
-      alert("Ingresa un monto válido");
-      return;
-    }
+    if (!nombreProveedor) return alert("Ingresa el proveedor");
+    if (!isFinite(n) || n <= 0) return alert("Ingresa un monto válido");
+
+    const todayISO = new Date().toISOString().slice(0, 10);
+    const fechaCaja = data.settings?.fechaCajaAbierta || todayISO;
+
     const item = {
       id: uid(),
       fecha: new Date().toISOString(),
+      fechaCaja,
       tipo,
       proveedor: nombreProveedor,
       descripcion: descripcion.trim(),
@@ -1170,10 +1183,28 @@ function ComprasGastos({ data, setData }) {
 
   const eliminar = (id) => {
     if (!confirm("¿Eliminar este registro?")) return;
-    setData((s) => ({
-      ...s,
-      gastos: (s.gastos || []).filter((g) => g.id !== id),
-    }));
+
+    setData((s) => {
+      const itemToDelete = s.gastos.find((g) => g.id === id);
+      if (!itemToDelete) return s;
+
+      const newGastos = s.gastos.filter((g) => g.id !== id);
+
+      // Verificar si el proveedor se sigue usando
+      const providerName = itemToDelete.proveedor;
+      const isProviderUsed = newGastos.some(
+        (g) => g.proveedor.toLowerCase() === providerName.toLowerCase()
+      );
+
+      let newProveedores = s.proveedores;
+      if (!isProviderUsed) {
+        newProveedores = s.proveedores.filter(
+          (p) => p.toLowerCase() !== providerName.toLowerCase()
+        );
+      }
+
+      return { ...s, gastos: newGastos, proveedores: newProveedores };
+    });
   };
 
   const proveedores = data.proveedores || [];
@@ -1182,7 +1213,7 @@ function ComprasGastos({ data, setData }) {
   return (
     <Section
       title="Compras y gastos"
-      desc="Registra compras y gastos diarios usando tu lista de proveedores."
+      desc="Registra compras y gastos diarios."
       right={
         <button
           onClick={agregar}
@@ -1214,9 +1245,6 @@ function ComprasGastos({ data, setData }) {
               <option key={p} value={p} />
             ))}
           </datalist>
-          <span className="text-xs text-gray-500 mt-1">
-            Escribe para buscar y seleccionar un proveedor guardado.
-          </span>
         </div>
         <input
           className="border rounded-xl px-3 py-2"
@@ -1282,12 +1310,14 @@ function ComprasGastos({ data, setData }) {
   );
 }
 
-// ---- Cierre diario ----
+// ---- Cierre diario (Con Arqueo y Reabrir) ----
 function CierreDiario({ data, setData }) {
   const todayISO = new Date().toISOString().slice(0, 10);
-  const [fecha, setFecha] = useState(todayISO);
+  const initialDate = data.settings?.fechaCajaAbierta || todayISO;
+  const [fecha, setFecha] = useState(initialDate);
   const [efectivoCajaProxDia, setEfectivoCajaProxDia] = useState("");
   const [efectivoPedidosYa, setEfectivoPedidosYa] = useState("");
+  const [showArqueo, setShowArqueo] = useState(false);
 
   const cierres = data.cierres || {};
 
@@ -1307,17 +1337,14 @@ function CierreDiario({ data, setData }) {
   }, [fecha, cierres]);
 
   const resumen = useMemo(() => {
-    const d0 = new Date(fecha + "T00:00:00").getTime();
-    const d1 = new Date(fecha + "T23:59:59.999").getTime();
-
     const ventasDia = data.ventas.filter((v) => {
-      const t = new Date(v.fecha).getTime();
-      return t >= d0 && t <= d1;
+      const fLogica = v.fechaCaja || v.fecha.slice(0, 10);
+      return fLogica === fecha;
     });
 
     const gastosDia = (data.gastos || []).filter((g) => {
-      const t = new Date(g.fecha).getTime();
-      return t >= d0 && t <= d1;
+      const fLogica = g.fechaCaja || g.fecha.slice(0, 10);
+      return fLogica === fecha;
     });
 
     const sumVentas = (metodo) =>
@@ -1325,15 +1352,10 @@ function CierreDiario({ data, setData }) {
         .filter((v) => v.metodo === metodo)
         .reduce((a, b) => a + (b.total || 0), 0);
 
-    const totalVentas = ventasDia.reduce(
-      (a, b) => a + (b.total || 0),
-      0
-    );
-
+    const totalVentas = ventasDia.reduce((a, b) => a + (b.total || 0), 0);
     const totalCompras = gastosDia
       .filter((g) => g.tipo === "compra")
       .reduce((a, b) => a + (b.monto || 0), 0);
-
     const totalGastos = gastosDia
       .filter((g) => g.tipo === "gasto")
       .reduce((a, b) => a + (b.monto || 0), 0);
@@ -1369,7 +1391,6 @@ function CierreDiario({ data, setData }) {
 
   const efectivoCajaNum = parseMoneyInput(efectivoCajaProxDia);
   const efectivoPedidosYaNum = parseMoneyInput(efectivoPedidosYa);
-
   const efectivoTotalDisponible =
     resumen.porMetodo.efectivo +
     dineroCajaDiaAnterior +
@@ -1380,21 +1401,17 @@ function CierreDiario({ data, setData }) {
 
   const updateCierreValue = (field, rawValue) => {
     const num = parseMoneyInput(rawValue);
-    setData((s) => {
-      const oldCierres = s.cierres || {};
-      const prev = oldCierres[fecha] || {};
-      return {
-        ...s,
-        cierres: {
-          ...oldCierres,
-          [fecha]: {
-            ...prev,
-            [field]: num,
-            cerrado: prev.cerrado || false,
-          },
+    setData((s) => ({
+      ...s,
+      cierres: {
+        ...s.cierres,
+        [fecha]: {
+          ...(s.cierres?.[fecha] || {}),
+          [field]: num,
+          cerrado: s.cierres?.[fecha]?.cerrado || false,
         },
-      };
-    });
+      },
+    }));
   };
 
   const onChangeCajaProxDia = (value) => {
@@ -1407,51 +1424,70 @@ function CierreDiario({ data, setData }) {
     if (!cerrado) updateCierreValue("efectivoPedidosYa", value);
   };
 
-  const cerrarDefinitivo = () => {
-    if (
-      !confirm(
-        "¿Confirmar cierre definitivo del día? Luego no se podrán editar los campos de efectivo."
-      )
-    )
-      return;
-    const caja = efectivoCajaNum;
-    const pedYa = efectivoPedidosYaNum;
-    setData((s) => {
-      const oldCierres = s.cierres || {};
-      const prev = oldCierres[fecha] || {};
-      return {
+  const toggleCierre = () => {
+    if (cerrado) {
+      // REABRIR
+      if (!confirm("¿Reabrir caja? Las nuevas ventas se asignarán a esta fecha."))
+        return;
+      setData((s) => ({
         ...s,
+        settings: { ...s.settings, fechaCajaAbierta: fecha },
         cierres: {
-          ...oldCierres,
+          ...s.cierres,
+          [fecha]: { ...(s.cierres[fecha] || {}), cerrado: false },
+        },
+      }));
+    } else {
+      // CERRAR
+      if (
+        !confirm("¿Confirmar cierre definitivo? Se abrirá una nueva caja.")
+      )
+        return;
+      const caja = efectivoCajaNum;
+      const pedYa = efectivoPedidosYaNum;
+
+      const currentRealDate = new Date().toISOString().slice(0, 10);
+      let nextDate = currentRealDate;
+      if (fecha === currentRealDate) {
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        nextDate = d.toISOString().slice(0, 10);
+      }
+
+      setData((s) => ({
+        ...s,
+        settings: { ...s.settings, fechaCajaAbierta: nextDate },
+        cierres: {
+          ...s.cierres,
           [fecha]: {
-            ...prev,
+            ...(s.cierres?.[fecha] || {}),
             efectivoCajaProxDia: caja,
             efectivoPedidosYa: pedYa,
             cerrado: true,
           },
         },
-      };
-    });
-    alert("Cierre definitivo guardado. Día bloqueado para edición de efectivo.");
+      }));
+      alert(`Día cerrado. Se ha abierto la caja para la fecha: ${nextDate}`);
+      setFecha(nextDate);
+    }
   };
 
   return (
     <Section
       title="Cierre diario"
-      desc="Totales por método, compras, gastos y campos editables para efectivo en caja y PedidosYa."
+      desc="Totales acumulados. 'Cerrar Caja' finaliza este día y abre el siguiente."
       right={
         <div className="flex gap-2">
           <button
-            onClick={cerrarDefinitivo}
-            disabled={cerrado}
+            onClick={toggleCierre}
             className={
-              "px-3 py-1.5 rounded-xl border text-sm " +
+              "px-3 py-1.5 rounded-xl border text-sm font-bold transition-colors " +
               (cerrado
-                ? "bg-gray-200 text-gray-500 cursor-not-allowed"
-                : "bg-red-50 border-red-400 text-red-700 hover:bg-red-100")
+                ? "border-green-500 text-green-700 bg-green-50 hover:bg-green-100"
+                : "border-red-500 text-red-700 bg-red-50 hover:bg-red-100")
             }
           >
-            {cerrado ? "Día cerrado" : "Cierre definitivo del día"}
+            {cerrado ? "🔓 Reabrir Caja" : "🔒 Cerrar Caja"}
           </button>
           <button
             onClick={() => window.print()}
@@ -1462,14 +1498,27 @@ function CierreDiario({ data, setData }) {
         </div>
       }
     >
-      <div className="flex items-center gap-3 mb-4">
-        <label className="text-sm text-gray-700">Fecha</label>
+      <div className="flex items-center gap-3 mb-4 bg-gray-50 p-2 rounded-xl border border-gray-100">
+        <label className="text-sm text-gray-700 font-medium">
+          Fecha de Caja
+        </label>
         <input
           type="date"
-          className="border rounded-xl px-3 py-2"
+          className="border rounded-lg px-2 py-1"
           value={fecha}
           onChange={(e) => setFecha(e.target.value)}
         />
+        {fecha === (data.settings?.fechaCajaAbierta || todayISO) &&
+          !cerrado && (
+            <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-bold border border-green-200">
+              Caja Actual (Abierta)
+            </span>
+          )}
+        {cerrado && (
+          <span className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full font-bold border border-red-200">
+            CERRADA
+          </span>
+        )}
       </div>
 
       <div className="grid md:grid-cols-3 gap-3 mb-4">
@@ -1489,7 +1538,7 @@ function CierreDiario({ data, setData }) {
 
       <div className="grid md:grid-cols-4 gap-3 mb-6">
         <CardStat
-          label="Total ventas del día"
+          label="Total ventas"
           value={currency(resumen.totalVentas)}
           variant="primary"
         />
@@ -1502,7 +1551,7 @@ function CierreDiario({ data, setData }) {
           value={currency(resumen.totalGastos)}
         />
         <CardStat
-          label="Neto del día (ventas - compras - gastos)"
+          label="Neto (ventas - egresos)"
           value={currency(resumen.netoDia)}
           variant="primary"
         />
@@ -1510,7 +1559,7 @@ function CierreDiario({ data, setData }) {
 
       <div className="grid md:grid-cols-4 gap-3 mb-6">
         <CardStat
-          label="Dinero en caja (día anterior)"
+          label="Caja día anterior"
           value={currency(dineroCajaDiaAnterior)}
         />
         <CardStat
@@ -1521,16 +1570,30 @@ function CierreDiario({ data, setData }) {
       </div>
 
       <div className="grid md:grid-cols-2 gap-4 mb-6">
-        <div className="border rounded-2xl p-4 bg-white">
-          <label className="block text-sm text-gray-700 mb-1">
-            Efectivo en caja para próximo día
-          </label>
+        <div
+          className={`border rounded-2xl p-4 ${
+            cerrado ? "bg-gray-50" : "bg-white"
+          }`}
+        >
+          <div className="flex justify-between items-center mb-2">
+            <label className="block text-sm text-gray-700 font-medium">
+              Efectivo en caja para próximo día
+            </label>
+            {!cerrado && (
+              <button
+                onClick={() => setShowArqueo(true)}
+                className="text-indigo-600 text-sm font-bold hover:underline flex items-center gap-1"
+              >
+                🧮 Asistente
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">$</span>
             <input
               type="text"
-              className="flex-1 border rounded-xl px-3 py-2"
-              placeholder="$ 0,00"
+              className="flex-1 border rounded-xl px-3 py-2 font-bold text-lg"
+              placeholder="0"
               value={efectivoCajaProxDia}
               onChange={(e) => onChangeCajaProxDia(e.target.value)}
               disabled={cerrado}
@@ -1541,16 +1604,20 @@ function CierreDiario({ data, setData }) {
             <span className="font-medium">{currency(efectivoCajaNum)}</span>
           </div>
         </div>
-        <div className="border rounded-2xl p-4 bg-white">
-          <label className="block text-sm text-gray-700 mb-1">
+        <div
+          className={`border rounded-2xl p-4 ${
+            cerrado ? "bg-gray-50" : "bg-white"
+          }`}
+        >
+          <label className="block text-sm text-gray-700 font-medium mb-2">
             Efectivo de PedidosYa
           </label>
           <div className="flex items-center gap-2">
             <span className="text-gray-500">$</span>
             <input
               type="text"
-              className="flex-1 border rounded-xl px-3 py-2"
-              placeholder="$ 0,00"
+              className="flex-1 border rounded-xl px-3 py-2 font-bold text-lg"
+              placeholder="0"
               value={efectivoPedidosYa}
               onChange={(e) => onChangePedidosYa(e.target.value)}
               disabled={cerrado}
@@ -1566,7 +1633,7 @@ function CierreDiario({ data, setData }) {
       </div>
 
       <h3 className="text-sm font-semibold text-gray-700 mb-2">
-        Ventas del día
+        Ventas de esta caja
       </h3>
       <div className="overflow-auto max-h-[40vh] border rounded-2xl mb-6">
         <table className="w-full text-sm">
@@ -1602,7 +1669,7 @@ function CierreDiario({ data, setData }) {
       </div>
 
       <h3 className="text-sm font-semibold text-gray-700 mb-2">
-        Compras y gastos del día
+        Compras y gastos
       </h3>
       <div className="overflow-auto max-h-[40vh] border rounded-2xl">
         <table className="w-full text-sm">
@@ -1640,17 +1707,25 @@ function CierreDiario({ data, setData }) {
           </tbody>
         </table>
       </div>
+
+      {showArqueo && (
+        <ArqueoCaja
+          onClose={() => setShowArqueo(false)}
+          onConfirm={(total) => {
+            onChangeCajaProxDia(String(total));
+            setShowArqueo(false);
+          }}
+        />
+      )}
     </Section>
   );
 }
 
-// ---- Resumen histórico ----
+// ---- Resumen histórico (Simplificado) ----
 function ResumenHistorico({ data, setData }) {
   const todayISO = new Date().toISOString().slice(0, 10);
   const [desde, setDesde] = useState(todayISO);
   const [hasta, setHasta] = useState(todayISO);
-
-  const settings = data.settings || {};
 
   const { valido, resumen } = useMemo(() => {
     if (!desde || !hasta) return { valido: false, resumen: null };
@@ -1669,15 +1744,10 @@ function ResumenHistorico({ data, setData }) {
       return t >= d0 && t <= d1;
     });
 
-    const totalVentas = ventasRango.reduce(
-      (acc, v) => acc + (v.total || 0),
-      0
-    );
-
+    const totalVentas = ventasRango.reduce((acc, v) => acc + (v.total || 0), 0);
     const totalCompras = gastosRango
       .filter((g) => g.tipo === "compra")
       .reduce((acc, g) => acc + (g.monto || 0), 0);
-
     const totalGastos = gastosRango
       .filter((g) => g.tipo === "gasto")
       .reduce((acc, g) => acc + (g.monto || 0), 0);
@@ -1699,8 +1769,7 @@ function ResumenHistorico({ data, setData }) {
 
   const exportPdf = () => {
     if (!valido || !resumen) {
-      alert("Configura un rango de fechas válido antes de exportar.");
-      return;
+      return alert("Configura un rango válido.");
     }
 
     const {
@@ -1710,14 +1779,6 @@ function ResumenHistorico({ data, setData }) {
       totalGeneral,
       gastosRango,
     } = resumen;
-
-    const totalVentasStr = currency(totalVentas);
-    const totalComprasStr = currency(totalCompras);
-    const totalGastosStr = currency(totalGastos);
-    const totalGeneralStr = currency(totalGeneral);
-
-    const negocioNombre = settings.negocioNombre || "";
-    const logoUrl = settings.logoUrl || "";
 
     const rowsHtml = gastosRango
       .map((g) => {
@@ -1741,166 +1802,63 @@ function ResumenHistorico({ data, setData }) {
       .join("");
 
     const w = window.open("", "_blank");
-    if (!w) {
-      alert(
-        "No se pudo abrir la ventana de impresión. Revisa el bloqueador de ventanas emergentes."
-      );
-      return;
-    }
-
-    const titulo = negocioNombre.trim() || "Resumen histórico";
+    if (!w) return alert("Revisa el bloqueador de popups.");
 
     const html = `
       <!DOCTYPE html>
       <html lang="es">
       <head>
         <meta charset="utf-8" />
-        <title>${escapeHtml(titulo)}</title>
+        <title>Resumen histórico</title>
         <style>
           * { box-sizing: border-box; }
-          body {
-            margin: 0;
-            padding: 16px 24px;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            font-size: 12px;
-          }
-          h1 {
-            font-size: 20px;
-            margin: 0 0 4px 0;
-          }
-          .range {
-            font-size: 13px;
-            color: #4b5563;
-            margin-top: 2px;
-            margin-bottom: 16px;
-          }
-          .grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 8px;
-            margin-bottom: 18px;
-          }
-          .card {
-            border-radius: 10px;
-            border: 1px solid #e5e7eb;
-            padding: 8px 10px;
-            background: #f9fafb;
-          }
-          .card.primary {
-            background: #eef2ff;
-            border-color: #c7d2fe;
-          }
-          .card.accent {
-            background: #ecfdf5;
-            border-color: #6ee7b7;
-          }
-          .card-label {
-            font-size: 11px;
-            color: #6b7280;
-            margin-bottom: 4px;
-          }
-          .card-value {
-            font-size: 17px;
-            font-weight: 600;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 8px;
-          }
-          th, td {
-            border: 1px solid #e5e7eb;
-            padding: 4px 6px;
-          }
-          th {
-            background: #f3f4f6;
-            font-size: 11px;
-            text-align: left;
-          }
-          .section-title {
-            font-size: 13px;
-            font-weight: 600;
-            margin-top: 16px;
-          }
-          @page {
-            margin: 12mm;
-          }
+          body { margin: 0; padding: 20px; font-family: sans-serif; font-size: 12px; }
+          h1 { font-size: 18px; margin-bottom: 5px; }
+          .range { margin-bottom: 15px; color: #555; }
+          .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+          .card { border: 1px solid #ccc; padding: 10px; border-radius: 5px; }
+          .val { font-size: 16px; font-weight: bold; margin-top: 5px; }
+          table { width: 100%; border-collapse: collapse; }
+          th, td { border: 1px solid #ccc; padding: 5px; text-align: left; }
+          th { background: #f0f0f0; }
         </style>
       </head>
       <body onload="window.print()">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-          ${
-            logoUrl
-              ? `<img src="${logoUrl}" alt="Logo" style="height:48px;object-fit:contain;" />`
-              : ""
-          }
-          <div>
-            <h1>${escapeHtml(titulo)}</h1>
-            <div class="range">Período: ${desde} a ${hasta}</div>
-          </div>
-        </div>
-
+        <h1>Resumen Histórico</h1>
+        <div class="range">Del ${desde} al ${hasta}</div>
         <div class="grid">
-          <div class="card primary">
-            <div class="card-label">Total ventas en el rango</div>
-            <div class="card-value">${totalVentasStr}</div>
-          </div>
-          <div class="card primary">
-            <div class="card-label">Total compras en el rango</div>
-            <div class="card-value">${totalComprasStr}</div>
-          </div>
-          <div class="card primary">
-            <div class="card-label">Total gastos en el rango</div>
-            <div class="card-value">${totalGastosStr}</div>
-          </div>
-          <div class="card accent">
-            <div class="card-label">Total general (ventas - compras - gastos)</div>
-            <div class="card-value">${totalGeneralStr}</div>
-          </div>
+          <div class="card"><div>Ventas</div><div class="val">${currency(
+            totalVentas
+          )}</div></div>
+          <div class="card"><div>Compras</div><div class="val">${currency(
+            totalCompras
+          )}</div></div>
+          <div class="card"><div>Gastos</div><div class="val">${currency(
+            totalGastos
+          )}</div></div>
+          <div class="card"><div>NETO</div><div class="val">${currency(
+            totalGeneral
+          )}</div></div>
         </div>
-
-        <div class="section-title">Detalle de compras y gastos</div>
+        <h3>Detalle de compras/gastos</h3>
         <table>
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Hora</th>
-              <th>Tipo</th>
-              <th>Proveedor</th>
-              <th>Descripción</th>
-              <th style="text-align:right;">Monto</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              rowsHtml ||
-              `<tr><td colspan="6" style="text-align:center;color:#9ca3af;">No hay compras ni gastos en este rango.</td></tr>`
-            }
-          </tbody>
+          <thead><tr><th>Fecha</th><th>Hora</th><th>Tipo</th><th>Proveedor</th><th>Desc</th><th>Monto</th></tr></thead>
+          <tbody>${
+            rowsHtml || "<tr><td colspan='6'>Sin movimientos</td></tr>"
+          }</tbody>
         </table>
       </body>
       </html>
     `;
-
     w.document.open();
     w.document.write(html);
     w.document.close();
   };
 
-  const updateSetting = (field, value) => {
-    setData((s) => ({
-      ...s,
-      settings: {
-        ...(s.settings || {}),
-        [field]: value,
-      },
-    }));
-  };
-
   return (
     <Section
       title="Resumen histórico"
-      desc="Reporte de ventas, compras y gastos por rango de fechas. Puedes configurar el nombre y logo de la despensa para el PDF."
+      desc="Reporte de ventas, compras y gastos por rango de fechas."
       right={
         <button
           onClick={exportPdf}
@@ -1910,37 +1868,6 @@ function ResumenHistorico({ data, setData }) {
         </button>
       }
     >
-      <div className="grid md:grid-cols-3 gap-3 mb-4">
-        <div className="flex flex-col gap-2">
-          <label className="text-sm text-gray-700">
-            Nombre de la despensa (para el PDF)
-          </label>
-          <input
-            type="text"
-            className="border rounded-xl px-3 py-2"
-            placeholder="Ej: Despensa Don Luis"
-            value={settings.negocioNombre || ""}
-            onChange={(e) => updateSetting("negocioNombre", e.target.value)}
-          />
-        </div>
-        <div className="flex flex-col gap-2 md:col-span-2">
-          <label className="text-sm text-gray-700">
-            URL del logo (opcional, para el PDF)
-          </label>
-          <input
-            type="text"
-            className="border rounded-xl px-3 py-2"
-            placeholder="https://tusitio.com/logo.png"
-            value={settings.logoUrl || ""}
-            onChange={(e) => updateSetting("logoUrl", e.target.value)}
-          />
-          <span className="text-xs text-gray-500">
-            Puedes subir el logo a alguna nube (Drive, Dropbox, etc.) y pegar la
-            URL directa de la imagen.
-          </span>
-        </div>
-      </div>
-
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-700">Desde</label>
@@ -1963,32 +1890,27 @@ function ResumenHistorico({ data, setData }) {
       </div>
 
       {!valido && (
-        <p className="text-sm text-red-600 mb-4">
-          Verifica que ambas fechas estén completas y que “Desde” no sea mayor
-          que “Hasta”.
-        </p>
+        <p className="text-sm text-red-600 mb-4">Rango de fechas inválido.</p>
       )}
 
       {valido && resumen && (
         <>
           <div className="grid md:grid-cols-4 gap-3 mb-6">
             <CardStat
-              label="Total ventas en el rango"
+              label="Total ventas"
               value={currency(resumen.totalVentas)}
               variant="primary"
             />
             <CardStat
-              label="Total compras en el rango"
+              label="Total compras"
               value={currency(resumen.totalCompras)}
-              variant="primary"
             />
             <CardStat
-              label="Total gastos en el rango"
+              label="Total gastos"
               value={currency(resumen.totalGastos)}
-              variant="primary"
             />
             <CardStat
-              label="Total general (ventas - compras - gastos)"
+              label="Neto"
               value={currency(resumen.totalGeneral)}
               variant="accent"
             />
@@ -2024,15 +1946,13 @@ function ResumenHistorico({ data, setData }) {
                     <td className="p-2 capitalize">{g.tipo}</td>
                     <td className="p-2">{g.proveedor}</td>
                     <td className="p-2">{g.descripcion}</td>
-                    <td className="p-2 text-right">
-                      {currency(g.monto)}
-                    </td>
+                    <td className="p-2 text-right">{currency(g.monto)}</td>
                   </tr>
                 ))}
                 {!resumen.gastosRango.length && (
                   <tr>
                     <td colSpan={6} className="p-6 text-center text-gray-500">
-                      No hay compras ni gastos en este rango.
+                      No hay movimientos en este rango.
                     </td>
                   </tr>
                 )}
@@ -2098,9 +2018,7 @@ function RankingVentas({ email }) {
       <div className="space-y-4">
         <div className="flex flex-wrap items-end gap-2">
           <div>
-            <label className="block text-sm font-medium mb-1">
-              Desde
-            </label>
+            <label className="block text-sm font-medium mb-1">Desde</label>
             <input
               type="date"
               value={desde}
@@ -2109,9 +2027,7 @@ function RankingVentas({ email }) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">
-              Hasta
-            </label>
+            <label className="block text-sm font-medium mb-1">Hasta</label>
             <input
               type="date"
               value={hasta}
@@ -2128,11 +2044,7 @@ function RankingVentas({ email }) {
           </button>
         </div>
 
-        {error && (
-          <div className="text-red-600 text-sm">
-            {error}
-          </div>
-        )}
+        {error && <div className="text-red-600 text-sm">{error}</div>}
 
         {data && (
           <div className="space-y-2">
@@ -2166,9 +2078,7 @@ function RankingVentas({ email }) {
                       <td className="px-2 py-1">{idx + 1}</td>
                       <td className="px-2 py-1">{p.ean}</td>
                       <td className="px-2 py-1">{p.nombre}</td>
-                      <td className="px-2 py-1 text-right">
-                        {p.cantidad}
-                      </td>
+                      <td className="px-2 py-1 text-right">{p.cantidad}</td>
                       <td className="px-2 py-1 text-right">
                         {p.total.toLocaleString("es-AR", {
                           style: "currency",
@@ -2223,26 +2133,17 @@ function Fiados({ data, setData }) {
   const agregarAbono = () => {
     const nombre = abonoNombre.trim();
     const monto = parseMoneyInput(abonoMonto);
-    if (!nombre) {
-      alert("Ingresa el nombre de la persona.");
-      return;
-    }
-    if (!isFinite(monto) || monto <= 0) {
-      alert("Ingresa un monto válido (> 0).");
-      return;
-    }
+    if (!nombre) return alert("Ingresa el nombre de la persona.");
+    if (!isFinite(monto) || monto <= 0) return alert("Ingresa un monto válido.");
+
     const existe = personas.find(
       (p) => p.nombre.toLowerCase() === nombre.toLowerCase()
     );
-    if (!existe) {
-      alert("No se encontró esa persona en Fiados.");
-      return;
-    }
+    if (!existe) return alert("No se encontró esa persona en Fiados.");
 
     const pass = prompt("Ingresa la contraseña para registrar el abono:");
     if (pass !== "19256436") {
-      alert("Contraseña incorrecta o operación cancelada. No se registró el abono.");
-      return;
+      return alert("Contraseña incorrecta.");
     }
 
     setData((s) => {
@@ -2261,12 +2162,9 @@ function Fiados({ data, setData }) {
           ],
         };
       });
-
-      // Eliminar personas cuyo saldo quede en cero (o casi)
       fiados = fiados.filter(
         (p) => computeSaldoPersona(p, productosS) > 0.0001
       );
-
       return { ...s, fiados };
     });
 
@@ -2280,13 +2178,11 @@ function Fiados({ data, setData }) {
   return (
     <Section
       title="Fiados"
-      desc="Personas con deudas, detalle de compras fiadas y abonos. El saldo se recalcula automáticamente; para productos con precio 0 se usa el precio guardado en ese fiado."
+      desc="Personas con deudas. El saldo se recalcula automáticamente."
     >
       <div className="grid md:grid-cols-3 gap-3 mb-4">
         <div className="flex flex-col gap-1 md:col-span-1">
-          <label className="text-sm text-gray-700">
-            Nombre de la persona (para abono)
-          </label>
+          <label className="text-sm text-gray-700">Nombre (para abono)</label>
           <input
             className="border rounded-xl px-3 py-2"
             placeholder="Ej: Juan Pérez"
@@ -2301,9 +2197,7 @@ function Fiados({ data, setData }) {
           </datalist>
         </div>
         <div className="flex flex-col gap-1 md:col-span-1">
-          <label className="text-sm text-gray-700">
-            Importe del abono
-          </label>
+          <label className="text-sm text-gray-700">Importe del abono</label>
           <input
             type="text"
             className="border rounded-xl px-3 py-2"
@@ -2311,15 +2205,11 @@ function Fiados({ data, setData }) {
             value={abonoMonto}
             onChange={(e) => setAbonoMonto(e.target.value)}
           />
-          <span className="text-xs text-gray-500">
-            Se descontará del saldo acumulado de la persona. Requiere
-            contraseña.
-          </span>
         </div>
         <div className="flex items-end md:col-span-1">
           <button
             onClick={agregarAbono}
-            className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 mt-2 md:mt-0"
+            className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 mt-2 md:mt-0 shadow-md"
           >
             Agregar abono
           </button>
@@ -2327,10 +2217,7 @@ function Fiados({ data, setData }) {
       </div>
 
       {personasConSaldo.length === 0 ? (
-        <p className="text-sm text-gray-500">
-          No hay fiados activos. Cuando registres ventas con el método de pago
-          <strong> Fiado</strong>, aparecerán aquí.
-        </p>
+        <p className="text-sm text-gray-500">No hay fiados activos.</p>
       ) : (
         <div className="space-y-4 max-h-[60vh] overflow-auto pr-1">
           {personasConSaldo.map((p) => {
@@ -2339,17 +2226,12 @@ function Fiados({ data, setData }) {
             const mapProd = new Map(productos.map((pr) => [pr.ean, pr]));
 
             return (
-              <div
-                key={p.id}
-                className="border rounded-2xl p-4 bg-white/80"
-              >
+              <div key={p.id} className="border rounded-2xl p-4 bg-white/80">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-lg font-semibold">{p.nombre}</h3>
                   <span className="text-sm text-gray-600">
                     Saldo actual:{" "}
-                    <span className="font-semibold">
-                      {currency(p.saldo)}
-                    </span>
+                    <span className="font-semibold">{currency(p.saldo)}</span>
                   </span>
                 </div>
 
@@ -2370,50 +2252,41 @@ function Fiados({ data, setData }) {
                         <tbody>
                           {cargos.map((c) => {
                             let totalCargo = 0;
-                            const detalle = (c.items || []).map(
-                              (it, idx) => {
-                                const prod = mapProd.get(it.ean);
-                                const nombreProd =
-                                  prod?.nombre || `Producto sin nombre`;
-                                const qty = Number(it.qty) || 0;
-
-                                const precioBase =
-                                  typeof it.precioUnitario === "number"
-                                    ? it.precioUnitario
-                                    : prod
-                                    ? Number(prod.precio) || 0
-                                    : 0;
-
-                                const sub = precioBase * qty;
-                                totalCargo += sub;
-
-                                return (
-                                  <div
-                                    key={idx}
-                                    className="flex justify-between gap-2"
-                                  >
-                                    <span className="truncate">
-                                      EAN {it.ean} - x{qty} {nombreProd}
-                                    </span>
-                                    <span>{currency(sub)}</span>
-                                  </div>
-                                );
-                              }
-                            );
-
+                            const detalle = (c.items || []).map((it, idx) => {
+                              const prod = mapProd.get(it.ean);
+                              const nombreProd =
+                                prod?.nombre || `Producto sin nombre`;
+                              const qty = Number(it.qty) || 0;
+                              const precioBase =
+                                typeof it.precioUnitario === "number"
+                                  ? it.precioUnitario
+                                  : prod
+                                  ? Number(prod.precio) || 0
+                                  : 0;
+                              const sub = precioBase * qty;
+                              totalCargo += sub;
+                              return (
+                                <div
+                                  key={idx}
+                                  className="flex justify-between gap-2"
+                                >
+                                  <span className="truncate">
+                                    EAN {it.ean} - x{qty} {nombreProd}
+                                  </span>
+                                  <span>{currency(sub)}</span>
+                                </div>
+                              );
+                            });
                             return (
                               <tr
                                 key={c.id}
                                 className="odd:bg-white even:bg-gray-50 align-top"
                               >
                                 <td className="p-1.5">
-                                  {new Date(c.fecha).toLocaleString(
-                                    "es-AR",
-                                    {
-                                      dateStyle: "short",
-                                      timeStyle: "short",
-                                    }
-                                  )}
+                                  {new Date(c.fecha).toLocaleString("es-AR", {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })}
                                 </td>
                                 <td className="p-1.5">{detalle}</td>
                                 <td className="p-1.5 text-right align-top whitespace-nowrap">
@@ -2455,13 +2328,10 @@ function Fiados({ data, setData }) {
                               className="odd:bg-white even:bg-gray-50"
                             >
                               <td className="p-1.5">
-                                {new Date(a.fecha).toLocaleString(
-                                  "es-AR",
-                                  {
-                                    dateStyle: "short",
-                                    timeStyle: "short",
-                                  }
-                                )}
+                                {new Date(a.fecha).toLocaleString("es-AR", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}
                               </td>
                               <td className="p-1.5 text-right">
                                 {currency(a.monto)}
@@ -2501,7 +2371,7 @@ function CardStat({ label, value, variant = "normal" }) {
       : "bg-white border-gray-200";
 
   return (
-    <div className={`border rounded-2xl p-4 ${variantClasses}`}>
+    <div className={`border rounded-2xl p-4 ${variantClasses} shadow-sm`}>
       <div className="text-sm text-gray-600">{label}</div>
       <div className="text-2xl font-semibold">{value}</div>
     </div>
@@ -2521,14 +2391,16 @@ function Nav({ tab, setTab }) {
     { id: "io", label: "Importar/Exportar" },
   ];
   return (
-    <nav className="flex gap-2 p-2 bg-white/80 backdrop-blur border-b border-gray-200 sticky top-[57px] z-20">
+    <nav className="flex gap-2 p-2 bg-white/80 backdrop-blur border-b border-gray-200 sticky top-[57px] z-20 overflow-x-auto">
       {tabs.map((t) => (
         <button
           key={t.id}
           onClick={() => setTab(t.id)}
           className={
-            "px-3 py-1.5 rounded-xl border text-sm " +
-            (tab === t.id ? "bg-gray-900 text-white" : "hover:bg-gray-50")
+            "px-3 py-1.5 rounded-xl border text-sm whitespace-nowrap transition-all " +
+            (tab === t.id
+              ? "bg-gray-900 text-white shadow-md"
+              : "hover:bg-gray-50 text-gray-700")
           }
         >
           {t.label}
@@ -2538,12 +2410,12 @@ function Nav({ tab, setTab }) {
   );
 }
 
-// ---- App principal ----
+// ---- App principal (CON PANTALLA DE CARGA) ----
 export default function DespensaApp() {
   const [email, setEmail] = useState(
     localStorage.getItem("despensa:lastEmail") || ""
   );
-  const [data, setData] = useUserStorage(email);
+  const [data, setData, isLoaded] = useUserStorage(email);
   const [tab, setTab] = useState("productos");
 
   useEffect(() => {
@@ -2552,36 +2424,50 @@ export default function DespensaApp() {
 
   const logout = () => setEmail("");
 
-  return (
-    <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white text-gray-900">
-      {email ? (
-        <>
-          <TopBar email={email} onLogout={logout} />
-          <Nav tab={tab} setTab={setTab} />
-          <main className="max-w-6xl mx-auto p-4 space-y-4">
-            {tab === "productos" && (
-              <Productos data={data} setData={setData} />
-            )}
-            {tab === "venta" && <NuevaVenta data={data} setData={setData} />}
-            {tab === "gastos" && (
-              <ComprasGastos data={data} setData={setData} />
-            )}
-            {tab === "fiados" && <Fiados data={data} setData={setData} />}
-            {tab === "cierre" && (
-              <CierreDiario data={data} setData={setData} />
-            )}
-            {tab === "ranking" && <RankingVentas email={email} />}
-            {tab === "historico" && (
-              <ResumenHistorico data={data} setData={setData} />
-            )}
-            {tab === "io" && <ImportExport data={data} setData={setData} />}
-          </main>
-        </>
-      ) : (
+  // 1. Login Screen
+  if (!email) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white text-gray-900 font-sans">
         <Login onLogin={setEmail} />
-      )}
+        <footer className="text-center text-xs text-gray-500 py-6">
+          APP Local de Despensa v1.6
+        </footer>
+      </div>
+    );
+  }
+
+  // 2. Loading Screen (Protección de datos)
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-indigo-50 text-indigo-900">
+        <div className="text-center animate-pulse">
+          <div className="text-6xl mb-4">🧺</div>
+          <h2 className="text-2xl font-semibold">Sincronizando tu despensa...</h2>
+          <p className="text-indigo-600 mt-2">Por favor espera un momento</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Main App
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white text-gray-900 font-sans">
+      <TopBar email={email} onLogout={logout} />
+      <Nav tab={tab} setTab={setTab} />
+      <main className="max-w-6xl mx-auto p-4 space-y-4 pb-20">
+        {tab === "productos" && <Productos data={data} setData={setData} />}
+        {tab === "venta" && <NuevaVenta data={data} setData={setData} />}
+        {tab === "gastos" && <ComprasGastos data={data} setData={setData} />}
+        {tab === "fiados" && <Fiados data={data} setData={setData} />}
+        {tab === "cierre" && <CierreDiario data={data} setData={setData} />}
+        {tab === "ranking" && <RankingVentas email={email} />}
+        {tab === "historico" && (
+          <ResumenHistorico data={data} setData={setData} />
+        )}
+        {tab === "io" && <ImportExport data={data} setData={setData} />}
+      </main>
       <footer className="text-center text-xs text-gray-500 py-6">
-        APP Local de Despensa v1
+        APP Local de Despensa v1.6
       </footer>
     </div>
   );
