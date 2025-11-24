@@ -29,7 +29,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  *    - Muestra EAN + nombre de producto en detalle
  *    - Si saldo queda en 0 → se borra la persona de fiados
  * ✔ Ventas recientes:
- *    - Se puede cambiar el método de pago sin borrar la venta
+ *    - Se puede cambiar el método de pago sin borrar la venta (si no está en día cerrado y no es multipago)
  * ✔ Compras / Gastos:
  *    - Registrar tipo (compra/gasto), proveedor, descripción, monto (con decimales)
  *    - Lista de proveedores reutilizable (datalist)
@@ -38,13 +38,15 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  *    - Total ventas, compras, gastos, neto del día
  *    - Dinero en caja (día anterior) desde cierre anterior
  *    - Efectivo Total Disponible = efectivo día + caja día anterior + PedidosYa - caja próximo día
- *    - Cierre definitivo bloquea edición de efectivo
+ *    - Cierre definitivo bloquea edición de efectivo y elimina ventas de ese día
+ *    - Las ventas se acumulan hasta el cierre, aunque pasen las 00:00
+ *    - Se puede reabrir un día cerrado
  * ✔ Resumen histórico:
  *    - Rango de fechas
  *    - Totales de ventas, compras, gastos
  *    - Total general (ventas - compras - gastos)
  *    - Sin detalle de ventas, solo detalle de compras/gastos
- *    - Botón Imprimir / PDF con nombre y logo de la despensa
+ *    - Botón Imprimir / PDF simple
  * ✔ Ranking de ventas:
  *    - Rango de fechas
  *    - Agrupa por producto
@@ -55,7 +57,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
  *    - Exportar respaldo JSON (incluye todo)
  */
 
-// ---- Utilidades ----
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
 console.log("API_URL EN RUNTIME:", API_URL);
 
@@ -67,18 +68,18 @@ const currency = (n) =>
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// Precio para PedidosYa: precio / (1 - 29.5%) ⇒ redondeado hacia arriba
+// Precio para PedidosYa: precio / (1 - 29.5%)
 const pedidosYaPrice = (precio) => {
   const base = Number(precio) || 0;
   if (base <= 0) return 0;
-  return Math.ceil(base / (1 - 0.295)); // 0.705
+  return Math.ceil(base / (1 - 0.295));
 };
 
-// Precio para Rappi: precio / (1 - 20%) ⇒ redondeado hacia arriba
+// Precio para Rappi: precio / (1 - 20%)
 const rappiPrice = (precio) => {
   const base = Number(precio) || 0;
   if (base <= 0) return 0;
-  return Math.ceil(base / (1 - 0.2)); // 0.8
+  return Math.ceil(base / (1 - 0.2));
 };
 
 const parseMoneyInput = (v) => {
@@ -128,8 +129,6 @@ function parseCSV(raw) {
 }
 
 // ---- Fiados: cálculo de saldo ----
-// Usa precioUnitario si fue guardado (para productos con precio 0 al momento del fiado),
-// o el precio actual del producto si no hay precioUnitario.
 function computeSaldoPersona(fiador, productos) {
   const map = new Map((productos || []).map((p) => [p.ean, p]));
   let totalCargos = 0;
@@ -170,17 +169,14 @@ function useUserStorage(email) {
     settings: {},
   });
 
-  // Cargar estado inicial desde el backend cuando cambia el email
   useEffect(() => {
     if (!email) return;
-
     const controller = new AbortController();
 
     async function fetchState() {
       try {
         const res = await fetch(
           `${API_URL}/estado?email=${encodeURIComponent(email)}`,
-
           { signal: controller.signal }
         );
         if (!res.ok) throw new Error("Error al cargar estado");
@@ -198,7 +194,6 @@ function useUserStorage(email) {
       } catch (err) {
         if (err.name === "AbortError") return;
         console.error("Error cargando estado desde backend:", err);
-        // Si falla, arrancamos con estado vacío
         setState({
           productos: [],
           ventas: [],
@@ -212,17 +207,12 @@ function useUserStorage(email) {
     }
 
     fetchState();
-
     return () => controller.abort();
   }, [email]);
 
-  // Guardar en el backend cada vez que cambie el estado (si hay email)
   useEffect(() => {
     if (!email) return;
-
     const controller = new AbortController();
-
-    // Pequeño debounce para no enviar en cada tecla
     const timeout = setTimeout(async () => {
       try {
         await fetch(
@@ -249,14 +239,14 @@ function useUserStorage(email) {
   return [state, setState];
 }
 
-// ---- Componentes de layout ----
+// ---- Layout ----
 function Section({ title, desc, children, right }) {
   return (
-    <div className="bg-white/70 backdrop-blur shadow-sm rounded-2xl p-5 border border-gray-200">
+    <div className="bg-white shadow-sm rounded-2xl p-5 border border-slate-200">
       <div className="flex items-start justify-between gap-4 mb-3">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">{title}</h2>
-          {desc && <p className="text-sm text-gray-500">{desc}</p>}
+          <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
+          {desc && <p className="text-sm text-slate-500">{desc}</p>}
         </div>
         {right}
       </div>
@@ -267,16 +257,25 @@ function Section({ title, desc, children, right }) {
 
 function TopBar({ email, onLogout }) {
   return (
-    <header className="flex items-center justify-between px-4 py-3 bg-white/80 backdrop-blur border-b border-gray-200 sticky top-0 z-30">
+    <header className="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200 sticky top-0 z-30">
       <div className="flex items-center gap-3">
-        <span className="text-2xl">🧺</span>
-        <h1 className="text-lg font-semibold">DespensaApp</h1>
+        <div className="h-9 w-9 rounded-2xl bg-gradient-to-br from-sky-500 to-indigo-600 text-white grid place-items-center shadow-sm">
+          <span className="text-xs font-bold tracking-tight">DA</span>
+        </div>
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight text-slate-900">
+            DespensaApp
+          </h1>
+          <p className="text-xs text-slate-500">Panel de gestión diaria</p>
+        </div>
       </div>
       <div className="flex items-center gap-3 text-sm">
-        <span className="text-gray-600">{email}</span>
+        <span className="px-2 py-1 rounded-xl bg-slate-100 text-slate-700">
+          {email}
+        </span>
         <button
           onClick={onLogout}
-          className="px-3 py-1.5 rounded-xl border text-gray-700 hover:bg-gray-50"
+          className="px-3 py-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 transition"
         >
           Cerrar sesión
         </button>
@@ -296,26 +295,28 @@ function Login({ onLogin }) {
     onLogin(email.toLowerCase());
   };
   return (
-    <div className="min-h-[60vh] grid place-items-center">
+    <div className="min-h-[60vh] grid place-items-center px-4 bg-slate-100">
       <form
         onSubmit={handle}
-        className="bg-white/80 backdrop-blur border border-gray-200 rounded-2xl p-6 w-full max-w-md shadow-sm"
+        className="bg-white border border-slate-200 rounded-2xl p-6 w-full max-w-md shadow-sm"
       >
-        <h1 className="text-2xl font-semibold mb-2">Ingresar</h1>
-        <p className="text-sm text-gray-600 mb-4">
+        <h1 className="text-2xl font-semibold mb-2 text-slate-900">
+          Ingresar a DespensaApp
+        </h1>
+        <p className="text-sm text-slate-600 mb-4">
           Por ahora solo pedimos tu email (MVP). Más adelante agregamos
           verificación.
         </p>
-        <label className="block text-sm text-gray-700 mb-1">Email</label>
+        <label className="block text-sm text-slate-700 mb-1">Email</label>
         <input
           autoFocus
-          className="w-full border rounded-xl px-3 py-2 mb-4 focus:outline-none focus:ring focus:ring-indigo-200"
+          className="w-full border rounded-xl px-3 py-2 mb-4 focus:outline-none focus:ring focus:ring-sky-200"
           placeholder="tucorreo@ejemplo.com"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           type="email"
         />
-        <button className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700">
+        <button className="w-full bg-sky-600 text-white rounded-xl py-2 hover:bg-sky-700 transition font-medium">
           Entrar
         </button>
       </form>
@@ -342,6 +343,15 @@ function Productos({ data, setData }) {
     setData((s) => ({
       ...s,
       productos: s.productos.map((p) => (p.id === id ? { ...p, precio } : p)),
+    }));
+  };
+
+  const updateNombre = (id, nombre) => {
+    setData((s) => ({
+      ...s,
+      productos: s.productos.map((p) =>
+        p.id === id ? { ...p, nombre } : p
+      ),
     }));
   };
 
@@ -500,23 +510,51 @@ function Productos({ data, setData }) {
     w.document.close();
   };
 
+  const exportProductos = () => {
+    const rows = [
+      ["ean", "nombre", "precio"],
+      ...data.productos.map((p) => [
+        p.ean,
+        p.nombre,
+        p.precio != null ? p.precio : 0,
+      ]),
+    ];
+    const csv = rows
+      .map((r) =>
+        r
+          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+          .join(",")
+      )
+      .join("\n");
+    download(
+      `productos-${new Date().toISOString().slice(0, 10)}.csv`,
+      csv
+    );
+  };
+
   return (
     <Section
       title="Productos"
-      desc="Busca por código o nombre. Edita precios haciendo clic en el valor. No permite EAN duplicados."
+      desc="Busca por código o nombre. Edita nombres y precios haciendo clic en el valor. No permite EAN duplicados."
       right={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-end">
           <button
             onClick={addManual}
-            className="px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+            className="px-3 py-1.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
           >
             + Agregar
           </button>
           <button
             onClick={generateLabels}
-            className="px-3 py-1.5 rounded-xl border border-indigo-400 text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-sm"
+            className="px-3 py-1.5 rounded-xl border border-sky-400 text-sky-700 bg-sky-50 hover:bg-sky-100 text-sm"
           >
             Etiquetas (PDF)
+          </button>
+          <button
+            onClick={exportProductos}
+            className="px-3 py-1.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
+          >
+            Exportar productos (CSV)
           </button>
           <button
             onClick={removeSelected}
@@ -525,7 +563,7 @@ function Productos({ data, setData }) {
               "px-3 py-1.5 rounded-xl border text-sm " +
               (selectedIds.length
                 ? "border-red-400 text-red-700 bg-red-50 hover:bg-red-100"
-                : "border-gray-200 text-gray-400 bg-gray-100 cursor-not-allowed")
+                : "border-slate-200 text-slate-400 bg-slate-100 cursor-not-allowed")
             }
           >
             Eliminar seleccionados
@@ -540,13 +578,13 @@ function Productos({ data, setData }) {
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
-        <span className="text-sm text-gray-500">
+        <span className="text-sm text-slate-500">
           {results.length} / {data.productos.length}
         </span>
       </div>
-      <div className="overflow-auto max-h-[50vh] border rounded-2xl">
+      <div className="overflow-auto max-h-[50vh] border rounded-2xl bg-slate-50/40">
         <table className="w-full text-sm min-w-[900px]">
-          <thead className="bg-gray-50 sticky top-0">
+          <thead className="bg-slate-100 sticky top-0">
             <tr>
               <th className="p-2 text-center w-10">
                 <input
@@ -565,7 +603,7 @@ function Productos({ data, setData }) {
           </thead>
           <tbody>
             {results.map((p) => (
-              <tr key={p.id} className="odd:bg-white even:bg-gray-50">
+              <tr key={p.id} className="odd:bg-white even:bg-slate-50">
                 <td className="p-2 text-center">
                   <input
                     type="checkbox"
@@ -574,7 +612,12 @@ function Productos({ data, setData }) {
                   />
                 </td>
                 <td className="p-2 font-mono">{p.ean}</td>
-                <td className="p-2">{p.nombre}</td>
+                <td className="p-2">
+                  <InlineText
+                    value={p.nombre}
+                    onChange={(v) => updateNombre(p.id, v)}
+                  />
+                </td>
                 <td className="p-2 text-right">
                   <InlineMoney
                     value={p.precio}
@@ -590,7 +633,7 @@ function Productos({ data, setData }) {
                 <td className="p-2 text-right">
                   <button
                     onClick={() => remove(p.id)}
-                    className="text-red-600 hover:underline"
+                    className="text-red-600 hover:underline text-xs"
                   >
                     Eliminar
                   </button>
@@ -599,7 +642,7 @@ function Productos({ data, setData }) {
             ))}
             {!results.length && (
               <tr>
-                <td colSpan={7} className="p-6 text-center text-gray-500">
+                <td colSpan={7} className="p-6 text-center text-slate-500">
                   Sin resultados
                 </td>
               </tr>
@@ -633,7 +676,7 @@ function InlineMoney({ value, onChange }) {
     return (
       <button
         onClick={() => setEditing(true)}
-        className="px-2 py-1 rounded-lg hover:bg-gray-100 font-medium"
+        className="px-2 py-1 rounded-lg hover:bg-slate-100 font-medium"
       >
         {currency(value)}
       </button>
@@ -648,7 +691,49 @@ function InlineMoney({ value, onChange }) {
         onChange={(e) => setVal(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && commit()}
       />
-      <button onClick={commit} className="text-indigo-600 hover:underline">
+      <button onClick={commit} className="text-sky-600 hover:underline">
+        Guardar
+      </button>
+    </span>
+  );
+}
+
+function InlineText({ value, onChange }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(value || ""));
+  useEffect(() => setVal(String(value || "")), [value]);
+  const commit = () => {
+    const trimmed = val.trim();
+    if (!trimmed) {
+      alert("El nombre no puede estar vacío.");
+      return;
+    }
+    onChange(trimmed);
+    setEditing(false);
+  };
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="px-2 py-1 rounded-lg hover:bg-slate-100 text-left w-full"
+      >
+        {value || "(sin nombre)"}
+      </button>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-2 w-full">
+      <input
+        autoFocus
+        className="flex-1 border rounded-lg px-2 py-1"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+      />
+      <button
+        onClick={commit}
+        className="text-sky-600 hover:underline text-xs"
+      >
         Guardar
       </button>
     </span>
@@ -706,14 +791,14 @@ function ImportExport({ data, setData }) {
       right={
         <button
           onClick={downloadTemplate}
-          className="px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+          className="px-3 py-1.5 rounded-xl border hover:bg-slate-50 text-sm"
         >
           ↓ Plantilla CSV
         </button>
       }
     >
       <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <input
             type="file"
             accept=".csv,text/csv"
@@ -725,18 +810,18 @@ function ImportExport({ data, setData }) {
           />
           <button
             onClick={() => fileRef.current?.click()}
-            className="px-3 py-2 rounded-xl border hover:bg-gray-50"
+            className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
           >
             Importar CSV
           </button>
           <button
             onClick={exportJSON}
-            className="px-3 py-2 rounded-xl border hover:bg-gray-50"
+            className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
           >
             Exportar respaldo (JSON)
           </button>
         </div>
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-slate-600">
           Formato esperado: <code>ean,nombre,precio</code>. Ejemplo:{" "}
           <code className="ml-1">7790001000012,Leche entera 1L,1899</code>
         </p>
@@ -745,11 +830,24 @@ function ImportExport({ data, setData }) {
   );
 }
 
-// ---- Nueva venta (incluye Fiado) ----
+// ---- Nueva venta (incluye Fiado + multipago con restante) ----
 function NuevaVenta({ data, setData }) {
   const [codigo, setCodigo] = useState("");
   const [items, setItems] = useState([]); // {id, ean, nombre, precio, qty}
   const [metodo, setMetodo] = useState("efectivo");
+
+  // Multipago
+  const [multiPago, setMultiPago] = useState(false);
+  const [pagosTemp, setPagosTemp] = useState([]); // {id, metodo, monto}
+  const [nuevoMetodoPago, setNuevoMetodoPago] = useState("efectivo");
+  const [nuevoMontoPago, setNuevoMontoPago] = useState("");
+
+  useEffect(() => {
+    if (metodo === "fiado") {
+      setMultiPago(false);
+      setPagosTemp([]);
+    }
+  }, [metodo]);
 
   const addByCode = () => {
     const code = codigo.trim();
@@ -765,7 +863,7 @@ function NuevaVenta({ data, setData }) {
 
     let precio = prod.precio;
 
-    // Si el producto tiene precio 0, pedirlo manualmente (máx. 10 dígitos) y NO actualizar el catálogo
+    // Precio 0 → pedir manual (sin actualizar catálogo)
     if (!precio || +precio === 0) {
       let manual = null;
       while (manual === null) {
@@ -796,7 +894,6 @@ function NuevaVenta({ data, setData }) {
         manual = num;
       }
       precio = manual;
-      // Importante: no actualizamos el precio del producto en el catálogo.
     }
 
     setItems((arr) => {
@@ -827,6 +924,16 @@ function NuevaVenta({ data, setData }) {
     [items]
   );
 
+  const totalPagosTemp = useMemo(
+    () => pagosTemp.reduce((a, p) => a + (p.monto || 0), 0),
+    [pagosTemp]
+  );
+
+  const restante = useMemo(
+    () => Math.max(0, total - totalPagosTemp),
+    [total, totalPagosTemp]
+  );
+
   const setQty = (id, qty) => {
     setItems((arr) =>
       arr.map((i) => (i.id === id ? { ...i, qty: Math.max(1, qty) } : i))
@@ -835,6 +942,23 @@ function NuevaVenta({ data, setData }) {
 
   const remove = (id) =>
     setItems((arr) => arr.filter((i) => i.id !== id));
+
+  const agregarPagoTemp = () => {
+    const monto = parseMoneyInput(nuevoMontoPago);
+    if (!isFinite(monto) || monto <= 0) {
+      alert("Ingresa un monto válido para el pago.");
+      return;
+    }
+    setPagosTemp((arr) => [
+      ...arr,
+      { id: uid(), metodo: nuevoMetodoPago, monto },
+    ]);
+    setNuevoMontoPago("");
+  };
+
+  const quitarPagoTemp = (id) => {
+    setPagosTemp((arr) => arr.filter((p) => p.id !== id));
+  };
 
   const finalizar = () => {
     if (!items.length) return alert("Agrega artículos a la venta.");
@@ -847,19 +971,16 @@ function NuevaVenta({ data, setData }) {
 
     const ahora = new Date().toISOString();
 
-    // Caso FIADO: no se guarda en ventas, se guarda en fiados
+    // ---- FIADO (corregido, sin duplicar) ----
     if (metodo === "fiado") {
-      const nombre = (prompt(
-        "¿A nombre de quién queda registrado el fiado?"
-      ) || "").trim();
+      const nombre = (
+        prompt("¿A nombre de quién queda registrado el fiado?") || ""
+      ).trim();
       if (!nombre) {
         alert("Debes indicar un nombre para registrar el fiado.");
         return;
       }
 
-      // Armamos los ítems del fiado:
-      // - Si el producto en el catálogo tiene precio 0 → guardamos precioUnitario (congelado)
-      // - Si no, solo guardamos ean y qty (se recalculará con precio actual)
       const cargoItems = items.map((i) => {
         const prod = data.productos.find((p) => p.ean === i.ean);
         const prodPrecio = prod ? Number(prod.precio) || 0 : 0;
@@ -872,10 +993,7 @@ function NuevaVenta({ data, setData }) {
           };
         }
 
-        return {
-          ean: i.ean,
-          qty: i.qty,
-        };
+        return { ean: i.ean, qty: i.qty };
       });
 
       const cargo = {
@@ -885,16 +1003,28 @@ function NuevaVenta({ data, setData }) {
       };
 
       setData((s) => {
-        const fiados = [...(s.fiados || [])];
-        let persona = fiados.find(
-          (f) => f.nombre.toLowerCase() === nombre.toLowerCase()
+        const actuales = s.fiados || [];
+        const idx = actuales.findIndex(
+          (p) => p.nombre.toLowerCase() === nombre.toLowerCase()
         );
-        if (!persona) {
-          persona = { id: uid(), nombre, cargos: [], abonos: [] };
-          fiados.push(persona);
+        let fiadosActualizados;
+
+        if (idx === -1) {
+          fiadosActualizados = [
+            ...actuales,
+            { id: uid(), nombre, cargos: [cargo], abonos: [] },
+          ];
+        } else {
+          const persona = actuales[idx];
+          const personaActualizada = {
+            ...persona,
+            cargos: [cargo, ...(persona.cargos || [])],
+          };
+          fiadosActualizados = [...actuales];
+          fiadosActualizados[idx] = personaActualizada;
         }
-        persona.cargos = [cargo, ...(persona.cargos || [])];
-        return { ...s, fiados };
+
+        return { ...s, fiados: fiadosActualizados };
       });
 
       setItems([]);
@@ -903,15 +1033,51 @@ function NuevaVenta({ data, setData }) {
     }
 
     // Venta normal (no fiado) → va a "ventas"
-    const venta = {
-      id: uid(),
-      fecha: ahora,
-      items,
-      metodo,
-      total,
-    };
+    let venta = null;
+
+    if (multiPago) {
+      if (!pagosTemp.length) {
+        alert("Agrega al menos un método de pago.");
+        return;
+      }
+      const totalPagos = pagosTemp.reduce(
+        (a, p) => a + (p.monto || 0),
+        0
+      );
+      const diff = Math.abs(totalPagos - total);
+      if (diff > 0.01) {
+        alert(
+          `La suma de los métodos de pago (${currency(
+            totalPagos
+          )}) no coincide con el total de la venta (${currency(total)}).`
+        );
+        return;
+      }
+      const pagos = pagosTemp.map(({ id, ...rest }) => rest);
+      venta = {
+        id: uid(),
+        fecha: ahora,
+        items,
+        metodo: "mixto",
+        total,
+        pagos,
+      };
+    } else {
+      venta = {
+        id: uid(),
+        fecha: ahora,
+        items,
+        metodo,
+        total,
+        pagos: [{ metodo, monto: total }],
+      };
+    }
+
     setData((s) => ({ ...s, ventas: [venta, ...s.ventas] }));
     setItems([]);
+    setPagosTemp([]);
+    setMultiPago(false);
+    setNuevoMontoPago("");
     alert("Venta registrada ✅");
   };
 
@@ -932,14 +1098,14 @@ function NuevaVenta({ data, setData }) {
             />
             <button
               onClick={addByCode}
-              className="px-3 py-2 rounded-xl border hover:bg-gray-50"
+              className="px-3 py-2 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
             >
               Agregar
             </button>
           </div>
-          <div className="overflow-auto max-h-[40vh] border rounded-2xl">
+          <div className="overflow-auto max-h-[40vh] border rounded-2xl bg-slate-50/40">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 sticky top-0">
+              <thead className="bg-slate-100 sticky top-0">
                 <tr>
                   <th className="text-left p-2">EAN</th>
                   <th className="text-left p-2">Artículo</th>
@@ -951,7 +1117,7 @@ function NuevaVenta({ data, setData }) {
               </thead>
               <tbody>
                 {items.map((i) => (
-                  <tr key={i.id} className="odd:bg-white even:bg-gray-50">
+                  <tr key={i.id} className="odd:bg-white even:bg-slate-50">
                     <td className="p-2 font-mono">{i.ean}</td>
                     <td className="p-2">{i.nombre}</td>
                     <td className="p-2 text-right">{currency(i.precio)}</td>
@@ -972,7 +1138,7 @@ function NuevaVenta({ data, setData }) {
                     <td className="p-2 text-right">
                       <button
                         onClick={() => remove(i.id)}
-                        className="text-red-600 hover:underline"
+                        className="text-red-600 hover:underline text-xs"
                       >
                         Quitar
                       </button>
@@ -981,7 +1147,10 @@ function NuevaVenta({ data, setData }) {
                 ))}
                 {!items.length && (
                   <tr>
-                    <td colSpan={6} className="p-6 text-center text-gray-500">
+                    <td
+                      colSpan={6}
+                      className="p-6 text-center text-slate-500"
+                    >
                       No hay artículos en esta venta
                     </td>
                   </tr>
@@ -998,7 +1167,7 @@ function NuevaVenta({ data, setData }) {
         >
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
-              <label className="flex items-center gap-2 border rounded-xl p-2">
+              <label className="flex items-center gap-2 border rounded-xl p-2 text-xs md:text-sm">
                 <input
                   type="radio"
                   name="metodo"
@@ -1007,7 +1176,7 @@ function NuevaVenta({ data, setData }) {
                 />
                 Efectivo
               </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
+              <label className="flex items-center gap-2 border rounded-xl p-2 text-xs md:text-sm">
                 <input
                   type="radio"
                   name="metodo"
@@ -1016,7 +1185,7 @@ function NuevaVenta({ data, setData }) {
                 />
                 MercadoPago
               </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
+              <label className="flex items-center gap-2 border rounded-xl p-2 text-xs md:text-sm">
                 <input
                   type="radio"
                   name="metodo"
@@ -1025,7 +1194,7 @@ function NuevaVenta({ data, setData }) {
                 />
                 Posnet
               </label>
-              <label className="flex items-center gap-2 border rounded-xl p-2">
+              <label className="flex items-center gap-2 border rounded-xl p-2 text-xs md:text-sm">
                 <input
                   type="radio"
                   name="metodo"
@@ -1035,16 +1204,111 @@ function NuevaVenta({ data, setData }) {
                 Fiado
               </label>
             </div>
-            <div className="flex items-center justify-between text-lg font-semibold">
+
+            {metodo !== "fiado" && (
+              <div className="flex items-center justify-between mt-2">
+                <label className="flex items-center gap-2 text-xs md:text-sm">
+                  <input
+                    type="checkbox"
+                    checked={multiPago}
+                    onChange={(e) => {
+                      setMultiPago(e.target.checked);
+                      setPagosTemp([]);
+                    }}
+                  />
+                  <span>Venta con múltiples métodos de pago</span>
+                </label>
+              </div>
+            )}
+
+            {multiPago && metodo !== "fiado" && (
+              <div className="mt-2 space-y-2 border rounded-xl p-2 bg-slate-50">
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    className="border rounded-xl px-3 py-1.5 text-xs md:text-sm"
+                    value={nuevoMetodoPago}
+                    onChange={(e) => setNuevoMetodoPago(e.target.value)}
+                  >
+                    <option value="efectivo">Efectivo</option>
+                    <option value="mercadopago">MercadoPago</option>
+                    <option value="posnet">Posnet</option>
+                  </select>
+                  <input
+                    type="text"
+                    className="border rounded-xl px-3 py-1.5 text-xs md:text-sm"
+                    placeholder="Monto (ej: 1000,00)"
+                    value={nuevoMontoPago}
+                    onChange={(e) => setNuevoMontoPago(e.target.value)}
+                  />
+                  <button
+                    onClick={agregarPagoTemp}
+                    className="px-3 py-1.5 rounded-xl bg-sky-600 text-white text-xs md:text-sm hover:bg-sky-700"
+                  >
+                    Agregar
+                  </button>
+                </div>
+                <div className="text-xs text-slate-600 space-y-0.5">
+                  <div>
+                    Total de la venta:{" "}
+                    <span className="font-semibold">
+                      {currency(total)}
+                    </span>
+                  </div>
+                  <div>
+                    Suma de métodos cargados:{" "}
+                    <span className="font-semibold">
+                      {currency(totalPagosTemp)}
+                    </span>
+                  </div>
+                  <div>
+                    Restante por pagar:{" "}
+                    <span
+                      className={
+                        "font-semibold " +
+                        (restante === 0
+                          ? "text-emerald-600"
+                          : "text-amber-600")
+                      }
+                    >
+                      {currency(restante)}
+                    </span>
+                  </div>
+                </div>
+                {pagosTemp.length > 0 && (
+                  <div className="space-y-1 text-xs">
+                    {pagosTemp.map((p) => (
+                      <div
+                        key={p.id}
+                        className="flex items-center justify-between bg-white rounded-lg px-2 py-1 border"
+                      >
+                        <span>
+                          {p.metodo} · {currency(p.monto)}
+                        </span>
+                        <button
+                          onClick={() => quitarPagoTemp(p.id)}
+                          className="text-red-600 hover:underline"
+                        >
+                          Quitar
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between text-lg font-semibold pt-1">
               <span>Total</span>
               <span>{currency(total)}</span>
             </div>
             <button
               onClick={finalizar}
-              className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 disabled:opacity-50"
+              className="w-full bg-sky-600 text-white rounded-xl py-2 hover:bg-sky-700 disabled:opacity-50 text-sm md:text-base"
               disabled={!items.length}
             >
-              {metodo === "fiado" ? "Registrar fiado" : "Registrar venta"}
+              {metodo === "fiado"
+                ? "Registrar fiado"
+                : "Registrar venta"}
             </button>
           </div>
         </Section>
@@ -1054,8 +1318,24 @@ function NuevaVenta({ data, setData }) {
   );
 }
 
+// ---- Ventas recientes ----
 function VentasRecientes({ data, setData }) {
+  const cierres = data.cierres || {};
+
   const eliminarVenta = (id) => {
+    const venta = data.ventas.find((v) => v.id === id);
+    if (
+      venta &&
+      venta.cierreFecha &&
+      cierres[venta.cierreFecha] &&
+      cierres[venta.cierreFecha].cerrado
+    ) {
+      alert(
+        "Esta venta pertenece a un día ya cerrado y no puede eliminarse."
+      );
+      return;
+    }
+
     if (!confirm("¿Eliminar esta venta?")) return;
     setData((s) => ({
       ...s,
@@ -1064,9 +1344,41 @@ function VentasRecientes({ data, setData }) {
   };
 
   const actualizarMetodo = (id, metodo) => {
+    const venta = data.ventas.find((v) => v.id === id);
+    if (!venta) return;
+
+    if (
+      venta.cierreFecha &&
+      cierres[venta.cierreFecha] &&
+      cierres[venta.cierreFecha].cerrado
+    ) {
+      alert(
+        "Esta venta pertenece a un día ya cerrado y no puede modificarse."
+      );
+      return;
+    }
+
+    if (Array.isArray(venta.pagos) && venta.pagos.length > 1) {
+      alert(
+        "Esta venta tiene múltiples métodos de pago. Modifícala manualmente en el sistema (no editable desde aquí)."
+      );
+      return;
+    }
+
     setData((s) => ({
       ...s,
-      ventas: s.ventas.map((v) => (v.id === id ? { ...v, metodo } : v)),
+      ventas: s.ventas.map((v) =>
+        v.id === id
+          ? {
+              ...v,
+              metodo,
+              pagos:
+                Array.isArray(v.pagos) && v.pagos.length === 1
+                  ? [{ ...v.pagos[0], metodo }]
+                  : v.pagos,
+            }
+          : v
+      ),
     }));
   };
 
@@ -1074,53 +1386,104 @@ function VentasRecientes({ data, setData }) {
     <Section title="Ventas recientes">
       <div className="space-y-3 max-h-[30vh] overflow-auto pr-1">
         {data.ventas.length === 0 && (
-          <p className="text-sm text-gray-500">
-            Aún no hay ventas registradas (se muestran solo las que no son fiado).
+          <p className="text-sm text-slate-500">
+            Aún no hay ventas registradas (se muestran solo las que no son
+            fiado).
           </p>
         )}
-        {data.ventas.map((v) => (
-          <div key={v.id} className="border rounded-xl p-3">
-            <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
-              <span>
-                {new Date(v.fecha).toLocaleString("es-AR", {
-                  dateStyle: "short",
-                  timeStyle: "short",
-                })}
-              </span>
-              <select
-                className="border rounded-lg px-2 py-1 text-xs uppercase"
-                value={v.metodo}
-                onChange={(e) => actualizarMetodo(v.id, e.target.value)}
-              >
-                <option value="efectivo">efectivo</option>
-                <option value="mercadopago">mercadopago</option>
-                <option value="posnet">posnet</option>
-              </select>
-            </div>
-            <div className="text-sm">
-              {v.items.map((i) => (
-                <div key={i.id} className="flex items-center justify-between">
-                  <span className="truncate mr-2">
-                    {i.nombre} x{i.qty}
+        {data.ventas.map((v) => {
+          const bloqueada =
+            v.cierreFecha &&
+            cierres[v.cierreFecha] &&
+            cierres[v.cierreFecha].cerrado;
+
+          const esMultipago =
+            Array.isArray(v.pagos) && v.pagos.length > 1;
+
+          const totalVenta =
+            Array.isArray(v.pagos) && v.pagos.length
+              ? v.pagos.reduce((a, p) => a + (p.monto || 0), 0)
+              : v.total;
+
+          return (
+            <div key={v.id} className="border rounded-xl p-3 bg-white">
+              <div className="flex items-center justify-between text-sm text-slate-600 mb-2">
+                <span>
+                  {new Date(v.fecha).toLocaleString("es-AR", {
+                    dateStyle: "short",
+                    timeStyle: "short",
+                  })}
+                </span>
+                {esMultipago ? (
+                  <span className="px-2 py-1 rounded-full bg-sky-50 text-sky-700 text-xs">
+                    Múltiples métodos
                   </span>
-                  <span>{currency(i.precio * i.qty)}</span>
+                ) : (
+                  <select
+                    className="border rounded-lg px-2 py-1 text-xs uppercase disabled:bg-slate-100 disabled:text-slate-400"
+                    value={v.metodo}
+                    onChange={(e) =>
+                      actualizarMetodo(v.id, e.target.value)
+                    }
+                    disabled={bloqueada}
+                  >
+                    <option value="efectivo">efectivo</option>
+                    <option value="mercadopago">mercadopago</option>
+                    <option value="posnet">posnet</option>
+                  </select>
+                )}
+              </div>
+              <div className="text-sm">
+                {v.items.map((i) => (
+                  <div
+                    key={i.id}
+                    className="flex items-center justify-between"
+                  >
+                    <span className="truncate mr-2">
+                      {i.nombre} x{i.qty}
+                    </span>
+                    <span>{currency(i.precio * i.qty)}</span>
+                  </div>
+                ))}
+              </div>
+
+              {Array.isArray(v.pagos) && v.pagos.length > 0 && (
+                <div className="mt-2 text-xs text-slate-600">
+                  Métodos:{" "}
+                  {v.pagos
+                    .map(
+                      (p) => `${p.metodo} ${currency(p.monto || 0)}`
+                    )
+                    .join(" · ")}
                 </div>
-              ))}
+              )}
+
+              <div className="flex items-center justify-between mt-2 font-semibold">
+                <span>Total</span>
+                <span>{currency(totalVenta)}</span>
+              </div>
+              <div className="flex justify-between items-center mt-2">
+                <button
+                  onClick={() => eliminarVenta(v.id)}
+                  disabled={bloqueada}
+                  className={
+                    "text-xs " +
+                    (bloqueada
+                      ? "text-slate-400 cursor-not-allowed"
+                      : "text-red-600 hover:underline")
+                  }
+                >
+                  Eliminar venta
+                </button>
+                {bloqueada && (
+                  <span className="text-[11px] text-slate-500">
+                    Bloqueada por cierre definitivo
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex items-center justify-between mt-2 font-semibold">
-              <span>Total</span>
-              <span>{currency(v.total)}</span>
-            </div>
-            <div className="flex justify-end mt-2">
-              <button
-                onClick={() => eliminarVenta(v.id)}
-                className="text-xs text-red-600 hover:underline"
-              >
-                Eliminar venta
-              </button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Section>
   );
@@ -1160,7 +1523,9 @@ function ComprasGastos({ data, setData }) {
       );
       const proveedores = yaExiste
         ? proveedoresActuales
-        : [...proveedoresActuales, nombreProveedor].sort();
+        : [...proveedoresActuales, nombreProveedor].sort((a, b) =>
+            a.localeCompare(b)
+          );
       return { ...s, gastos, proveedores };
     });
     setProveedor("");
@@ -1170,10 +1535,22 @@ function ComprasGastos({ data, setData }) {
 
   const eliminar = (id) => {
     if (!confirm("¿Eliminar este registro?")) return;
-    setData((s) => ({
-      ...s,
-      gastos: (s.gastos || []).filter((g) => g.id !== id),
-    }));
+    setData((s) => {
+      const gastosRestantes = (s.gastos || []).filter(
+        (g) => g.id !== id
+      );
+      const proveedoresSet = new Set(
+        gastosRestantes.map((g) => g.proveedor)
+      );
+      const proveedores = Array.from(proveedoresSet).sort((a, b) =>
+        a.localeCompare(b)
+      );
+      return {
+        ...s,
+        gastos: gastosRestantes,
+        proveedores,
+      };
+    });
   };
 
   const proveedores = data.proveedores || [];
@@ -1186,7 +1563,7 @@ function ComprasGastos({ data, setData }) {
       right={
         <button
           onClick={agregar}
-          className="px-3 py-1.5 rounded-xl border hover:bg-gray-50"
+          className="px-3 py-1.5 rounded-xl border border-slate-300 hover:bg-slate-50 text-sm"
         >
           + Agregar
         </button>
@@ -1214,7 +1591,7 @@ function ComprasGastos({ data, setData }) {
               <option key={p} value={p} />
             ))}
           </datalist>
-          <span className="text-xs text-gray-500 mt-1">
+          <span className="text-xs text-slate-500 mt-1">
             Escribe para buscar y seleccionar un proveedor guardado.
           </span>
         </div>
@@ -1233,9 +1610,9 @@ function ComprasGastos({ data, setData }) {
         />
       </div>
 
-      <div className="overflow-auto max-h-[50vh] border rounded-2xl">
+      <div className="overflow-auto max-h-[50vh] border rounded-2xl bg-slate-50/40">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0">
+          <thead className="bg-slate-100 sticky top-0">
             <tr>
               <th className="text-left p-2">Fecha</th>
               <th className="text-left p-2">Tipo</th>
@@ -1247,7 +1624,7 @@ function ComprasGastos({ data, setData }) {
           </thead>
           <tbody>
             {registros.map((g) => (
-              <tr key={g.id} className="odd:bg-white even:bg-gray-50">
+              <tr key={g.id} className="odd:bg-white even:bg-slate-50">
                 <td className="p-2">
                   {new Date(g.fecha).toLocaleString("es-AR", {
                     dateStyle: "short",
@@ -1261,7 +1638,7 @@ function ComprasGastos({ data, setData }) {
                 <td className="p-2 text-right">
                   <button
                     onClick={() => eliminar(g.id)}
-                    className="text-red-600 hover:underline"
+                    className="text-red-600 hover:underline text-xs"
                   >
                     Eliminar
                   </button>
@@ -1270,7 +1647,7 @@ function ComprasGastos({ data, setData }) {
             ))}
             {!registros.length && (
               <tr>
-                <td colSpan={6} className="p-6 text-center text-gray-500">
+                <td colSpan={6} className="p-6 text-center text-slate-500">
                   Aún no hay compras ni gastos registrados
                 </td>
               </tr>
@@ -1289,7 +1666,12 @@ function CierreDiario({ data, setData }) {
   const [efectivoCajaProxDia, setEfectivoCajaProxDia] = useState("");
   const [efectivoPedidosYa, setEfectivoPedidosYa] = useState("");
 
+  const [showEfectivoHelper, setShowEfectivoHelper] = useState(false);
+  const [efectivoHelperItems, setEfectivoHelperItems] = useState([]);
+  const [efectivoHelperMonto, setEfectivoHelperMonto] = useState("");
+
   const cierres = data.cierres || {};
+  const cerrado = !!(cierres[fecha] && cierres[fecha].cerrado);
 
   useEffect(() => {
     const rec = cierres[fecha];
@@ -1306,29 +1688,83 @@ function CierreDiario({ data, setData }) {
     }
   }, [fecha, cierres]);
 
+  const helperTotal = useMemo(
+    () =>
+      efectivoHelperItems.reduce((a, item) => a + (item.monto || 0), 0),
+    [efectivoHelperItems]
+  );
+
+  const agregarHelperItem = () => {
+    const monto = parseMoneyInput(efectivoHelperMonto);
+    if (!isFinite(monto) || monto <= 0) {
+      alert("Ingresa un monto válido.");
+      return;
+    }
+    setEfectivoHelperItems((arr) => [
+      ...arr,
+      { id: uid(), monto },
+    ]);
+    setEfectivoHelperMonto("");
+  };
+
+  const limpiarHelper = () => {
+    setEfectivoHelperItems([]);
+    setEfectivoHelperMonto("");
+  };
+
+  const usarHelperTotal = () => {
+    const total = helperTotal;
+    const str = String(total).replace(".", ",");
+    setEfectivoCajaProxDia(str);
+    if (!cerrado) {
+      updateCierreValue("efectivoCajaProxDia", str);
+    }
+    setShowEfectivoHelper(false);
+  };
+
   const resumen = useMemo(() => {
+    const ventas = data.ventas || [];
+    const gastos = data.gastos || [];
+
+    const ventasAsignadas = ventas.filter(
+      (v) => v.cierreFecha === fecha
+    );
+    const ventasSinAsignar = ventas.filter((v) => !v.cierreFecha);
+
+    const ventasDia = cerrado
+      ? ventasAsignadas
+      : [...ventasAsignadas, ...ventasSinAsignar];
+
     const d0 = new Date(fecha + "T00:00:00").getTime();
     const d1 = new Date(fecha + "T23:59:59.999").getTime();
 
-    const ventasDia = data.ventas.filter((v) => {
-      const t = new Date(v.fecha).getTime();
-      return t >= d0 && t <= d1;
-    });
-
-    const gastosDia = (data.gastos || []).filter((g) => {
+    const gastosDia = (gastos || []).filter((g) => {
       const t = new Date(g.fecha).getTime();
       return t >= d0 && t <= d1;
     });
 
     const sumVentas = (metodo) =>
-      ventasDia
-        .filter((v) => v.metodo === metodo)
-        .reduce((a, b) => a + (b.total || 0), 0);
+      ventasDia.reduce((a, v) => {
+        if (Array.isArray(v.pagos) && v.pagos.length) {
+          return (
+            a +
+            v.pagos
+              .filter((p) => p.metodo === metodo)
+              .reduce((x, p) => x + (p.monto || 0), 0)
+          );
+        }
+        return a + (v.metodo === metodo ? (v.total || 0) : 0);
+      }, 0);
 
-    const totalVentas = ventasDia.reduce(
-      (a, b) => a + (b.total || 0),
-      0
-    );
+    const totalVentas = ventasDia.reduce((a, v) => {
+      if (Array.isArray(v.pagos) && v.pagos.length) {
+        return (
+          a +
+          v.pagos.reduce((x, p) => x + (p.monto || 0), 0)
+        );
+      }
+      return a + (v.total || 0);
+    }, 0);
 
     const totalCompras = gastosDia
       .filter((g) => g.tipo === "compra")
@@ -1355,7 +1791,7 @@ function CierreDiario({ data, setData }) {
       totalEgresos,
       netoDia,
     };
-  }, [data.ventas, data.gastos, fecha]);
+  }, [data.ventas, data.gastos, fecha, cerrado]);
 
   const prevDateStr = useMemo(() => {
     const d = new Date(fecha + "T00:00:00");
@@ -1364,7 +1800,8 @@ function CierreDiario({ data, setData }) {
   }, [fecha]);
 
   const dineroCajaDiaAnterior = parseMoneyInput(
-    (cierres[prevDateStr] && cierres[prevDateStr].efectivoCajaProxDia) || 0
+    (cierres[prevDateStr] && cierres[prevDateStr].efectivoCajaProxDia) ||
+      0
   );
 
   const efectivoCajaNum = parseMoneyInput(efectivoCajaProxDia);
@@ -1375,8 +1812,6 @@ function CierreDiario({ data, setData }) {
     dineroCajaDiaAnterior +
     efectivoPedidosYaNum -
     efectivoCajaNum;
-
-  const cerrado = !!(cierres[fecha] && cierres[fecha].cerrado);
 
   const updateCierreValue = (field, rawValue) => {
     const num = parseMoneyInput(rawValue);
@@ -1410,7 +1845,7 @@ function CierreDiario({ data, setData }) {
   const cerrarDefinitivo = () => {
     if (
       !confirm(
-        "¿Confirmar cierre definitivo del día? Luego no se podrán editar los campos de efectivo."
+        "¿Confirmar cierre definitivo del día? Luego no se podrán editar los campos de efectivo y las ventas de este período quedarán bloqueadas."
       )
     )
       return;
@@ -1419,20 +1854,63 @@ function CierreDiario({ data, setData }) {
     setData((s) => {
       const oldCierres = s.cierres || {};
       const prev = oldCierres[fecha] || {};
-      return {
-        ...s,
-        cierres: {
-          ...oldCierres,
-          [fecha]: {
-            ...prev,
-            efectivoCajaProxDia: caja,
-            efectivoPedidosYa: pedYa,
-            cerrado: true,
-          },
+      const cierresNuevos = {
+        ...oldCierres,
+        [fecha]: {
+          ...prev,
+          efectivoCajaProxDia: caja,
+          efectivoPedidosYa: pedYa,
+          cerrado: true,
         },
       };
+
+      const ventasConCierre = (s.ventas || []).map((v) =>
+        v.cierreFecha ? v : { ...v, cierreFecha: v.cierreFecha || fecha }
+      );
+
+      return {
+        ...s,
+        cierres: cierresNuevos,
+        ventas: ventasConCierre,
+      };
     });
-    alert("Cierre definitivo guardado. Día bloqueado para edición de efectivo.");
+    alert(
+      "Cierre definitivo guardado. Día bloqueado para edición de efectivo y ventas."
+    );
+  };
+
+  const reabrirDia = () => {
+    if (!cerrado) return;
+    if (
+      !confirm(
+        "¿Reabrir el cierre de este día? Podrás editar el efectivo y las ventas volverán a quedar abiertas."
+      )
+    )
+      return;
+
+    setData((s) => {
+      const oldCierres = s.cierres || {};
+      const prev = oldCierres[fecha] || {};
+      const cierresNuevos = {
+        ...oldCierres,
+        [fecha]: {
+          ...prev,
+          cerrado: false,
+        },
+      };
+
+      const ventasReabiertas = (s.ventas || []).map((v) =>
+        v.cierreFecha === fecha ? { ...v, cierreFecha: undefined } : v
+      );
+
+      return {
+        ...s,
+        cierres: cierresNuevos,
+        ventas: ventasReabiertas,
+      };
+    });
+
+    alert("Día reabierto. Ahora puedes seguir registrando ventas y editar el efectivo.");
   };
 
   return (
@@ -1440,14 +1918,22 @@ function CierreDiario({ data, setData }) {
       title="Cierre diario"
       desc="Totales por método, compras, gastos y campos editables para efectivo en caja y PedidosYa."
       right={
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2 justify-end">
+          {cerrado && (
+            <button
+              onClick={reabrirDia}
+              className="px-3 py-1.5 rounded-xl border text-xs md:text-sm bg-amber-50 border-amber-400 text-amber-800 hover:bg-amber-100"
+            >
+              Reabrir día
+            </button>
+          )}
           <button
             onClick={cerrarDefinitivo}
             disabled={cerrado}
             className={
-              "px-3 py-1.5 rounded-xl border text-sm " +
+              "px-3 py-1.5 rounded-xl border text-xs md:text-sm " +
               (cerrado
-                ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                ? "bg-slate-200 text-slate-500 cursor-not-allowed"
                 : "bg-red-50 border-red-400 text-red-700 hover:bg-red-100")
             }
           >
@@ -1455,7 +1941,7 @@ function CierreDiario({ data, setData }) {
           </button>
           <button
             onClick={() => window.print()}
-            className="px-3 py-1.5 rounded-xl border hover:bg-gray-50 text-sm"
+            className="px-3 py-1.5 rounded-xl border hover:bg-slate-50 text-xs md:text-sm"
           >
             Imprimir / PDF
           </button>
@@ -1463,7 +1949,7 @@ function CierreDiario({ data, setData }) {
       }
     >
       <div className="flex items-center gap-3 mb-4">
-        <label className="text-sm text-gray-700">Fecha</label>
+        <label className="text-sm text-slate-700">Fecha</label>
         <input
           type="date"
           className="border rounded-xl px-3 py-2"
@@ -1522,11 +2008,11 @@ function CierreDiario({ data, setData }) {
 
       <div className="grid md:grid-cols-2 gap-4 mb-6">
         <div className="border rounded-2xl p-4 bg-white">
-          <label className="block text-sm text-gray-700 mb-1">
+          <label className="block text-sm text-slate-700 mb-1">
             Efectivo en caja para próximo día
           </label>
-          <div className="flex items-center gap-2">
-            <span className="text-gray-500">$</span>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-slate-500">$</span>
             <input
               type="text"
               className="flex-1 border rounded-xl px-3 py-2"
@@ -1535,18 +2021,84 @@ function CierreDiario({ data, setData }) {
               onChange={(e) => onChangeCajaProxDia(e.target.value)}
               disabled={cerrado}
             />
+            <button
+              type="button"
+              onClick={() => setShowEfectivoHelper((v) => !v)}
+              className="px-2 py-1.5 rounded-xl border text-xs hover:bg-slate-50"
+              disabled={cerrado}
+            >
+              Contar efectivo
+            </button>
           </div>
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-xs text-slate-500">
             Valor formateado:{" "}
             <span className="font-medium">{currency(efectivoCajaNum)}</span>
           </div>
+
+          {showEfectivoHelper && !cerrado && (
+            <div className="mt-3 border rounded-xl p-3 bg-slate-50 space-y-2">
+              <div className="text-xs font-semibold text-slate-700 mb-1">
+                Sumar efectivo contado
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  type="text"
+                  className="flex-1 border rounded-xl px-2 py-1 text-xs"
+                  placeholder="Monto parcial (ej: 2000,00)"
+                  value={efectivoHelperMonto}
+                  onChange={(e) =>
+                    setEfectivoHelperMonto(e.target.value)
+                  }
+                />
+                <button
+                  type="button"
+                  onClick={agregarHelperItem}
+                  className="px-2.5 py-1.5 rounded-xl bg-sky-600 text-white text-xs hover:bg-sky-700"
+                >
+                  Sumar
+                </button>
+                <button
+                  type="button"
+                  onClick={limpiarHelper}
+                  className="px-2.5 py-1.5 rounded-xl border text-xs hover:bg-slate-100"
+                >
+                  Limpiar
+                </button>
+              </div>
+              {efectivoHelperItems.length > 0 && (
+                <div className="max-h-28 overflow-auto text-xs space-y-1">
+                  {efectivoHelperItems.map((it) => (
+                    <div
+                      key={it.id}
+                      className="flex justify-between items-center bg-white rounded-lg border px-2 py-1"
+                    >
+                      <span>Parcial: {currency(it.monto)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="text-xs text-slate-700">
+                Total contado:{" "}
+                <span className="font-semibold">
+                  {currency(helperTotal)}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={usarHelperTotal}
+                className="w-full mt-1 px-2.5 py-1.5 rounded-xl bg-emerald-600 text-white text-xs hover:bg-emerald-700"
+              >
+                Usar total como efectivo en caja
+              </button>
+            </div>
+          )}
         </div>
         <div className="border rounded-2xl p-4 bg-white">
-          <label className="block text-sm text-gray-700 mb-1">
+          <label className="block text-sm text-slate-700 mb-1">
             Efectivo de PedidosYa
           </label>
           <div className="flex items-center gap-2">
-            <span className="text-gray-500">$</span>
+            <span className="text-slate-500">$</span>
             <input
               type="text"
               className="flex-1 border rounded-xl px-3 py-2"
@@ -1556,7 +2108,7 @@ function CierreDiario({ data, setData }) {
               disabled={cerrado}
             />
           </div>
-          <div className="text-xs text-gray-500 mt-1">
+          <div className="text-xs text-slate-500 mt-1">
             Valor formateado:{" "}
             <span className="font-medium">
               {currency(efectivoPedidosYaNum)}
@@ -1565,12 +2117,12 @@ function CierreDiario({ data, setData }) {
         </div>
       </div>
 
-      <h3 className="text-sm font-semibold text-gray-700 mb-2">
-        Ventas del día
+      <h3 className="text-sm font-semibold text-slate-700 mb-2">
+        Ventas del día (según cierres)
       </h3>
-      <div className="overflow-auto max-h-[40vh] border rounded-2xl mb-6">
+      <div className="overflow-auto max-h-[40vh] border rounded-2xl mb-6 bg-slate-50/40">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0">
+          <thead className="bg-slate-100 sticky top-0">
             <tr>
               <th className="text-left p-2">Hora</th>
               <th className="text-left p-2">Método</th>
@@ -1578,22 +2130,40 @@ function CierreDiario({ data, setData }) {
             </tr>
           </thead>
           <tbody>
-            {resumen.ventasDia.map((v) => (
-              <tr key={v.id} className="odd:bg-white even:bg-gray-50">
-                <td className="p-2">
-                  {new Date(v.fecha).toLocaleTimeString("es-AR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })}
-                </td>
-                <td className="p-2 uppercase">{v.metodo}</td>
-                <td className="p-2 text-right">{currency(v.total)}</td>
-              </tr>
-            ))}
+            {resumen.ventasDia.map((v) => {
+              const totalVenta =
+                Array.isArray(v.pagos) && v.pagos.length
+                  ? v.pagos.reduce(
+                      (a, p) => a + (p.monto || 0),
+                      0
+                    )
+                  : v.total;
+              return (
+                <tr
+                  key={v.id}
+                  className="odd:bg-white even:bg-slate-50"
+                >
+                  <td className="p-2">
+                    {new Date(v.fecha).toLocaleTimeString("es-AR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </td>
+                  <td className="p-2 uppercase">
+                    {Array.isArray(v.pagos) && v.pagos.length > 1
+                      ? "mixto"
+                      : v.metodo}
+                  </td>
+                  <td className="p-2 text-right">
+                    {currency(totalVenta)}
+                  </td>
+                </tr>
+              );
+            })}
             {!resumen.ventasDia.length && (
               <tr>
-                <td colSpan={3} className="p-6 text-center text-gray-500">
-                  Sin ventas en esta fecha
+                <td colSpan={3} className="p-6 text-center text-slate-500">
+                  Sin ventas en esta fecha / cierre
                 </td>
               </tr>
             )}
@@ -1601,12 +2171,12 @@ function CierreDiario({ data, setData }) {
         </table>
       </div>
 
-      <h3 className="text-sm font-semibold text-gray-700 mb-2">
+      <h3 className="text-sm font-semibold text-slate-700 mb-2">
         Compras y gastos del día
       </h3>
-      <div className="overflow-auto max-h-[40vh] border rounded-2xl">
+      <div className="overflow-auto max-h-[40vh] border rounded-2xl bg-slate-50/40">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 sticky top-0">
+          <thead className="bg-slate-100 sticky top-0">
             <tr>
               <th className="text-left p-2">Hora</th>
               <th className="text-left p-2">Tipo</th>
@@ -1617,7 +2187,10 @@ function CierreDiario({ data, setData }) {
           </thead>
           <tbody>
             {resumen.gastosDia.map((g) => (
-              <tr key={g.id} className="odd:bg-white even:bg-gray-50">
+              <tr
+                key={g.id}
+                className="odd:bg-white even:bg-slate-50"
+              >
                 <td className="p-2">
                   {new Date(g.fecha).toLocaleTimeString("es-AR", {
                     hour: "2-digit",
@@ -1627,12 +2200,14 @@ function CierreDiario({ data, setData }) {
                 <td className="p-2 capitalize">{g.tipo}</td>
                 <td className="p-2">{g.proveedor}</td>
                 <td className="p-2">{g.descripcion}</td>
-                <td className="p-2 text-right">{currency(g.monto)}</td>
+                <td className="p-2 text-right">
+                  {currency(g.monto)}
+                </td>
               </tr>
             ))}
             {!resumen.gastosDia.length && (
               <tr>
-                <td colSpan={5} className="p-6 text-center text-gray-500">
+                <td colSpan={5} className="p-6 text-center text-slate-500">
                   Sin compras ni gastos en esta fecha
                 </td>
               </tr>
@@ -1645,12 +2220,10 @@ function CierreDiario({ data, setData }) {
 }
 
 // ---- Resumen histórico ----
-function ResumenHistorico({ data, setData }) {
+function ResumenHistorico({ data }) {
   const todayISO = new Date().toISOString().slice(0, 10);
   const [desde, setDesde] = useState(todayISO);
   const [hasta, setHasta] = useState(todayISO);
-
-  const settings = data.settings || {};
 
   const { valido, resumen } = useMemo(() => {
     if (!desde || !hasta) return { valido: false, resumen: null };
@@ -1670,7 +2243,15 @@ function ResumenHistorico({ data, setData }) {
     });
 
     const totalVentas = ventasRango.reduce(
-      (acc, v) => acc + (v.total || 0),
+      (acc, v) => {
+        if (Array.isArray(v.pagos) && v.pagos.length) {
+          return (
+            acc +
+            v.pagos.reduce((x, p) => x + (p.monto || 0), 0)
+          );
+        }
+        return acc + (v.total || 0);
+      },
       0
     );
 
@@ -1716,9 +2297,6 @@ function ResumenHistorico({ data, setData }) {
     const totalGastosStr = currency(totalGastos);
     const totalGeneralStr = currency(totalGeneral);
 
-    const negocioNombre = settings.negocioNombre || "";
-    const logoUrl = settings.logoUrl || "";
-
     const rowsHtml = gastosRango
       .map((g) => {
         const fecha = new Date(g.fecha);
@@ -1748,7 +2326,7 @@ function ResumenHistorico({ data, setData }) {
       return;
     }
 
-    const titulo = negocioNombre.trim() || "Resumen histórico";
+    const titulo = "Resumen histórico";
 
     const html = `
       <!DOCTYPE html>
@@ -1828,16 +2406,9 @@ function ResumenHistorico({ data, setData }) {
         </style>
       </head>
       <body onload="window.print()">
-        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
-          ${
-            logoUrl
-              ? `<img src="${logoUrl}" alt="Logo" style="height:48px;object-fit:contain;" />`
-              : ""
-          }
-          <div>
-            <h1>${escapeHtml(titulo)}</h1>
-            <div class="range">Período: ${desde} a ${hasta}</div>
-          </div>
+        <div>
+          <h1>${escapeHtml(titulo)}</h1>
+          <div class="range">Período: ${desde} a ${hasta}</div>
         </div>
 
         <div class="grid">
@@ -1887,63 +2458,22 @@ function ResumenHistorico({ data, setData }) {
     w.document.close();
   };
 
-  const updateSetting = (field, value) => {
-    setData((s) => ({
-      ...s,
-      settings: {
-        ...(s.settings || {}),
-        [field]: value,
-      },
-    }));
-  };
-
   return (
     <Section
       title="Resumen histórico"
-      desc="Reporte de ventas, compras y gastos por rango de fechas. Puedes configurar el nombre y logo de la despensa para el PDF."
+      desc="Reporte de ventas, compras y gastos por rango de fechas."
       right={
         <button
           onClick={exportPdf}
-          className="px-3 py-1.5 rounded-xl border text-sm hover:bg-gray-50"
+          className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50"
         >
           Imprimir / PDF
         </button>
       }
     >
-      <div className="grid md:grid-cols-3 gap-3 mb-4">
-        <div className="flex flex-col gap-2">
-          <label className="text-sm text-gray-700">
-            Nombre de la despensa (para el PDF)
-          </label>
-          <input
-            type="text"
-            className="border rounded-xl px-3 py-2"
-            placeholder="Ej: Despensa Don Luis"
-            value={settings.negocioNombre || ""}
-            onChange={(e) => updateSetting("negocioNombre", e.target.value)}
-          />
-        </div>
-        <div className="flex flex-col gap-2 md:col-span-2">
-          <label className="text-sm text-gray-700">
-            URL del logo (opcional, para el PDF)
-          </label>
-          <input
-            type="text"
-            className="border rounded-xl px-3 py-2"
-            placeholder="https://tusitio.com/logo.png"
-            value={settings.logoUrl || ""}
-            onChange={(e) => updateSetting("logoUrl", e.target.value)}
-          />
-          <span className="text-xs text-gray-500">
-            Puedes subir el logo a alguna nube (Drive, Dropbox, etc.) y pegar la
-            URL directa de la imagen.
-          </span>
-        </div>
-      </div>
-
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <div className="flex items-center gap-2">
-          <label className="text-sm text-gray-700">Desde</label>
+          <label className="text-sm text-slate-700">Desde</label>
           <input
             type="date"
             className="border rounded-xl px-3 py-2"
@@ -1952,7 +2482,7 @@ function ResumenHistorico({ data, setData }) {
           />
         </div>
         <div className="flex items-center gap-2">
-          <label className="text-sm text-gray-700">Hasta</label>
+          <label className="text-sm text-slate-700">Hasta</label>
           <input
             type="date"
             className="border rounded-xl px-3 py-2"
@@ -1994,12 +2524,12 @@ function ResumenHistorico({ data, setData }) {
             />
           </div>
 
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">
             Compras y gastos en el rango
           </h3>
-          <div className="overflow-auto max-h-[40vh] border rounded-2xl">
+          <div className="overflow-auto max-h-[40vh] border rounded-2xl bg-slate-50/40">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 sticky top-0">
+              <thead className="bg-slate-100 sticky top-0">
                 <tr>
                   <th className="text-left p-2">Fecha</th>
                   <th className="text-left p-2">Hora</th>
@@ -2011,7 +2541,10 @@ function ResumenHistorico({ data, setData }) {
               </thead>
               <tbody>
                 {resumen.gastosRango.map((g) => (
-                  <tr key={g.id} className="odd:bg-white even:bg-gray-50">
+                  <tr
+                    key={g.id}
+                    className="odd:bg-white even:bg-slate-50"
+                  >
                     <td className="p-2">
                       {new Date(g.fecha).toLocaleDateString("es-AR")}
                     </td>
@@ -2031,7 +2564,10 @@ function ResumenHistorico({ data, setData }) {
                 ))}
                 {!resumen.gastosRango.length && (
                   <tr>
-                    <td colSpan={6} className="p-6 text-center text-gray-500">
+                    <td
+                      colSpan={6}
+                      className="p-6 text-center text-slate-500"
+                    >
                       No hay compras ni gastos en este rango.
                     </td>
                   </tr>
@@ -2122,7 +2658,7 @@ function RankingVentas({ email }) {
           <button
             onClick={cargarRanking}
             disabled={loading}
-            className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-sm disabled:opacity-50 hover:bg-indigo-700"
+            className="px-3 py-2 rounded-xl bg-sky-600 text-white text-sm disabled:opacity-50 hover:bg-sky-700"
           >
             {loading ? "Calculando..." : "Calcular"}
           </button>
@@ -2145,9 +2681,9 @@ function RankingVentas({ email }) {
               })}
             </div>
 
-            <div className="overflow-auto max-h-96 border rounded-2xl">
+            <div className="overflow-auto max-h-96 border rounded-2xl bg-slate-50/40">
               <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 sticky top-0">
+                <thead className="bg-slate-100 sticky top-0">
                   <tr>
                     <th className="px-2 py-1 text-left">#</th>
                     <th className="px-2 py-1 text-left">EAN</th>
@@ -2161,7 +2697,7 @@ function RankingVentas({ email }) {
                   {data.productos.map((p, idx) => (
                     <tr
                       key={`${p.ean}-${p.nombre}-${idx}`}
-                      className="border-t odd:bg-white even:bg-gray-50"
+                      className="border-t odd:bg-white even:bg-slate-50"
                     >
                       <td className="px-2 py-1">{idx + 1}</td>
                       <td className="px-2 py-1">{p.ean}</td>
@@ -2185,7 +2721,7 @@ function RankingVentas({ email }) {
                     <tr>
                       <td
                         colSpan={6}
-                        className="px-2 py-4 text-center text-gray-500"
+                        className="px-2 py-4 text-center text-slate-500"
                       >
                         No hay ventas registradas en el rango seleccionado.
                       </td>
@@ -2219,6 +2755,8 @@ function Fiados({ data, setData }) {
         .filter((p) => p.saldo > 0.0001),
     [personas, productos]
   );
+
+  const nombresFiados = personasConSaldo.map((p) => p.nombre);
 
   const agregarAbono = () => {
     const nombre = abonoNombre.trim();
@@ -2262,7 +2800,6 @@ function Fiados({ data, setData }) {
         };
       });
 
-      // Eliminar personas cuyo saldo quede en cero (o casi)
       fiados = fiados.filter(
         (p) => computeSaldoPersona(p, productosS) > 0.0001
       );
@@ -2275,8 +2812,6 @@ function Fiados({ data, setData }) {
     alert("Abono registrado.");
   };
 
-  const nombresFiados = personasConSaldo.map((p) => p.nombre);
-
   return (
     <Section
       title="Fiados"
@@ -2284,7 +2819,7 @@ function Fiados({ data, setData }) {
     >
       <div className="grid md:grid-cols-3 gap-3 mb-4">
         <div className="flex flex-col gap-1 md:col-span-1">
-          <label className="text-sm text-gray-700">
+          <label className="text-sm text-slate-700">
             Nombre de la persona (para abono)
           </label>
           <input
@@ -2301,7 +2836,7 @@ function Fiados({ data, setData }) {
           </datalist>
         </div>
         <div className="flex flex-col gap-1 md:col-span-1">
-          <label className="text-sm text-gray-700">
+          <label className="text-sm text-slate-700">
             Importe del abono
           </label>
           <input
@@ -2311,7 +2846,7 @@ function Fiados({ data, setData }) {
             value={abonoMonto}
             onChange={(e) => setAbonoMonto(e.target.value)}
           />
-          <span className="text-xs text-gray-500">
+          <span className="text-xs text-slate-500">
             Se descontará del saldo acumulado de la persona. Requiere
             contraseña.
           </span>
@@ -2319,7 +2854,7 @@ function Fiados({ data, setData }) {
         <div className="flex items-end md:col-span-1">
           <button
             onClick={agregarAbono}
-            className="w-full bg-indigo-600 text-white rounded-xl py-2 hover:bg-indigo-700 mt-2 md:mt-0"
+            className="w-full bg-sky-600 text-white rounded-xl py-2 hover:bg-sky-700 mt-2 md:mt-0"
           >
             Agregar abono
           </button>
@@ -2327,7 +2862,7 @@ function Fiados({ data, setData }) {
       </div>
 
       {personasConSaldo.length === 0 ? (
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-slate-500">
           No hay fiados activos. Cuando registres ventas con el método de pago
           <strong> Fiado</strong>, aparecerán aquí.
         </p>
@@ -2341,11 +2876,11 @@ function Fiados({ data, setData }) {
             return (
               <div
                 key={p.id}
-                className="border rounded-2xl p-4 bg-white/80"
+                className="border rounded-2xl p-4 bg-white"
               >
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-lg font-semibold">{p.nombre}</h3>
-                  <span className="text-sm text-gray-600">
+                  <span className="text-sm text-slate-600">
                     Saldo actual:{" "}
                     <span className="font-semibold">
                       {currency(p.saldo)}
@@ -2355,15 +2890,19 @@ function Fiados({ data, setData }) {
 
                 <div className="grid md:grid-cols-2 gap-4">
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-1">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-1">
                       Ventas fiadas
                     </h4>
-                    <div className="border rounded-xl max-h-48 overflow-auto">
+                    <div className="border rounded-xl max-h-48 overflow-auto bg-slate-50/40">
                       <table className="w-full text-xs">
-                        <thead className="bg-gray-50 sticky top-0">
+                        <thead className="bg-slate-100 sticky top-0">
                           <tr>
-                            <th className="text-left p-1.5">Fecha</th>
-                            <th className="text-left p-1.5">Detalle</th>
+                            <th className="text-left p-1.5">
+                              Fecha
+                            </th>
+                            <th className="text-left p-1.5">
+                              Detalle
+                            </th>
                             <th className="text-right p-1.5">Monto</th>
                           </tr>
                         </thead>
@@ -2374,11 +2913,13 @@ function Fiados({ data, setData }) {
                               (it, idx) => {
                                 const prod = mapProd.get(it.ean);
                                 const nombreProd =
-                                  prod?.nombre || `Producto sin nombre`;
+                                  prod?.nombre ||
+                                  `Producto sin nombre`;
                                 const qty = Number(it.qty) || 0;
 
                                 const precioBase =
-                                  typeof it.precioUnitario === "number"
+                                  typeof it.precioUnitario ===
+                                  "number"
                                     ? it.precioUnitario
                                     : prod
                                     ? Number(prod.precio) || 0
@@ -2393,9 +2934,12 @@ function Fiados({ data, setData }) {
                                     className="flex justify-between gap-2"
                                   >
                                     <span className="truncate">
-                                      EAN {it.ean} - x{qty} {nombreProd}
+                                      EAN {it.ean} - x{qty}{" "}
+                                      {nombreProd}
                                     </span>
-                                    <span>{currency(sub)}</span>
+                                    <span>
+                                      {currency(sub)}
+                                    </span>
                                   </div>
                                 );
                               }
@@ -2404,18 +2948,19 @@ function Fiados({ data, setData }) {
                             return (
                               <tr
                                 key={c.id}
-                                className="odd:bg-white even:bg-gray-50 align-top"
+                                className="odd:bg-white even:bg-slate-50 align-top"
                               >
                                 <td className="p-1.5">
-                                  {new Date(c.fecha).toLocaleString(
-                                    "es-AR",
-                                    {
-                                      dateStyle: "short",
-                                      timeStyle: "short",
-                                    }
-                                  )}
+                                  {new Date(
+                                    c.fecha
+                                  ).toLocaleString("es-AR", {
+                                    dateStyle: "short",
+                                    timeStyle: "short",
+                                  })}
                                 </td>
-                                <td className="p-1.5">{detalle}</td>
+                                <td className="p-1.5">
+                                  {detalle}
+                                </td>
                                 <td className="p-1.5 text-right align-top whitespace-nowrap">
                                   {currency(totalCargo)}
                                 </td>
@@ -2426,7 +2971,7 @@ function Fiados({ data, setData }) {
                             <tr>
                               <td
                                 colSpan={3}
-                                className="p-3 text-center text-gray-400"
+                                className="p-3 text-center text-slate-400"
                               >
                                 Sin ventas fiadas
                               </td>
@@ -2437,31 +2982,34 @@ function Fiados({ data, setData }) {
                     </div>
                   </div>
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-700 mb-1">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-1">
                       Abonos
                     </h4>
-                    <div className="border rounded-xl max-h-48 overflow-auto">
+                    <div className="border rounded-xl max-h-48 overflow-auto bg-slate-50/40">
                       <table className="w-full text-xs">
-                        <thead className="bg-gray-50 sticky top-0">
+                        <thead className="bg-slate-100 sticky top-0">
                           <tr>
-                            <th className="text-left p-1.5">Fecha</th>
-                            <th className="text-right p-1.5">Monto</th>
+                            <th className="text-left p-1.5">
+                              Fecha
+                            </th>
+                            <th className="text-right p-1.5">
+                              Monto
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
                           {abonos.map((a) => (
                             <tr
                               key={a.id}
-                              className="odd:bg-white even:bg-gray-50"
+                              className="odd:bg-white even:bg-slate-50"
                             >
                               <td className="p-1.5">
-                                {new Date(a.fecha).toLocaleString(
-                                  "es-AR",
-                                  {
-                                    dateStyle: "short",
-                                    timeStyle: "short",
-                                  }
-                                )}
+                                {new Date(
+                                  a.fecha
+                                ).toLocaleString("es-AR", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}
                               </td>
                               <td className="p-1.5 text-right">
                                 {currency(a.monto)}
@@ -2472,7 +3020,7 @@ function Fiados({ data, setData }) {
                             <tr>
                               <td
                                 colSpan={2}
-                                className="p-3 text-center text-gray-400"
+                                className="p-3 text-center text-slate-400"
                               >
                                 Sin abonos registrados
                               </td>
@@ -2495,14 +3043,14 @@ function Fiados({ data, setData }) {
 function CardStat({ label, value, variant = "normal" }) {
   const variantClasses =
     variant === "primary"
-      ? "bg-indigo-50 border-indigo-300"
+      ? "bg-sky-50 border-sky-300"
       : variant === "accent"
       ? "bg-emerald-50 border-emerald-300"
-      : "bg-white border-gray-200";
+      : "bg-white border-slate-200";
 
   return (
     <div className={`border rounded-2xl p-4 ${variantClasses}`}>
-      <div className="text-sm text-gray-600">{label}</div>
+      <div className="text-sm text-slate-600">{label}</div>
       <div className="text-2xl font-semibold">{value}</div>
     </div>
   );
@@ -2521,14 +3069,16 @@ function Nav({ tab, setTab }) {
     { id: "io", label: "Importar/Exportar" },
   ];
   return (
-    <nav className="flex gap-2 p-2 bg-white/80 backdrop-blur border-b border-gray-200 sticky top-[57px] z-20">
+    <nav className="flex flex-wrap gap-2 p-2 bg-white border-b border-slate-200 sticky top-[57px] z-20">
       {tabs.map((t) => (
         <button
           key={t.id}
           onClick={() => setTab(t.id)}
           className={
-            "px-3 py-1.5 rounded-xl border text-sm " +
-            (tab === t.id ? "bg-gray-900 text-white" : "hover:bg-gray-50")
+            "px-3 py-1.5 rounded-full text-sm transition " +
+            (tab === t.id
+              ? "bg-slate-900 text-white shadow-sm"
+              : "border border-slate-200 text-slate-700 hover:bg-slate-50")
           }
         >
           {t.label}
@@ -2553,7 +3103,7 @@ export default function DespensaApp() {
   const logout = () => setEmail("");
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-indigo-50 to-white text-gray-900">
+    <div className="min-h-screen bg-slate-100 text-slate-900">
       {email ? (
         <>
           <TopBar email={email} onLogout={logout} />
@@ -2562,26 +3112,32 @@ export default function DespensaApp() {
             {tab === "productos" && (
               <Productos data={data} setData={setData} />
             )}
-            {tab === "venta" && <NuevaVenta data={data} setData={setData} />}
+            {tab === "venta" && (
+              <NuevaVenta data={data} setData={setData} />
+            )}
             {tab === "gastos" && (
               <ComprasGastos data={data} setData={setData} />
             )}
-            {tab === "fiados" && <Fiados data={data} setData={setData} />}
+            {tab === "fiados" && (
+              <Fiados data={data} setData={setData} />
+            )}
             {tab === "cierre" && (
               <CierreDiario data={data} setData={setData} />
             )}
             {tab === "ranking" && <RankingVentas email={email} />}
             {tab === "historico" && (
-              <ResumenHistorico data={data} setData={setData} />
+              <ResumenHistorico data={data} />
             )}
-            {tab === "io" && <ImportExport data={data} setData={setData} />}
+            {tab === "io" && (
+              <ImportExport data={data} setData={setData} />
+            )}
           </main>
         </>
       ) : (
         <Login onLogin={setEmail} />
       )}
-      <footer className="text-center text-xs text-gray-500 py-6">
-        APP Local de Despensa v1
+      <footer className="text-center text-xs text-slate-400 py-6">
+        DespensaApp v1.1
       </footer>
     </div>
   );
