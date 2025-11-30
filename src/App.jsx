@@ -3205,7 +3205,7 @@ export default function DespensaApp() {
         <Login onLogin={setEmail} />
       )}
       <footer className="text-center text-xs text-slate-400 py-6">
-        DespensaApp v1.1
+        DespensaApp v1.1 Datos Protegidos
       </footer>
     </div>
   );
