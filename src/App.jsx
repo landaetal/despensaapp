@@ -169,11 +169,33 @@ function useUserStorage(email) {
     settings: {},
   });
 
+  // Nueva pieza de estado: fecha/hora del último backup local
+  const [lastBackupAt, setLastBackupAt] = useState(null);
+
   useEffect(() => {
     if (!email) return;
     const controller = new AbortController();
+    const BACKUP_KEY = `despensa:backup:${email}`;
 
     async function fetchState() {
+      // 1) Intentar leer backup local (por si el backend falla)
+      let backup = null;
+      try {
+        const raw = localStorage.getItem(BACKUP_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.version === 1 && parsed.state) {
+            backup = parsed;
+            if (typeof parsed.updatedAt === "string") {
+              setLastBackupAt(parsed.updatedAt);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Error leyendo backup local:", e);
+      }
+
+      // 2) Intentar cargar desde backend
       try {
         const res = await fetch(
           `${API_URL}/estado?email=${encodeURIComponent(email)}`,
@@ -193,16 +215,34 @@ function useUserStorage(email) {
         });
       } catch (err) {
         if (err.name === "AbortError") return;
-        console.error("Error cargando estado desde backend:", err);
-        setState({
-          productos: [],
-          ventas: [],
-          gastos: [],
-          proveedores: [],
-          cierres: {},
-          fiados: [],
-          settings: {},
-        });
+        console.error(
+          "Error cargando estado desde backend, usando backup local si existe:",
+          err
+        );
+        if (backup && backup.state) {
+          // Si hay backup local, lo usamos
+          setState({
+            productos: [],
+            ventas: [],
+            gastos: [],
+            proveedores: [],
+            cierres: {},
+            fiados: [],
+            settings: {},
+            ...(backup.state || {}),
+          });
+        } else {
+          // Si no hay backend ni backup, dejamos todo vacío
+          setState({
+            productos: [],
+            ventas: [],
+            gastos: [],
+            proveedores: [],
+            cierres: {},
+            fiados: [],
+            settings: {},
+          });
+        }
       }
     }
 
@@ -213,17 +253,31 @@ function useUserStorage(email) {
   useEffect(() => {
     if (!email) return;
     const controller = new AbortController();
+    const BACKUP_KEY = `despensa:backup:${email}`;
+
     const timeout = setTimeout(async () => {
+      // 1) Guardar SIEMPRE backup local
       try {
-        await fetch(
-          `${API_URL}/estado?email=${encodeURIComponent(email)}`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(state),
-            signal: controller.signal,
-          }
-        );
+        const now = new Date().toISOString();
+        const payload = {
+          version: 1,
+          updatedAt: now,
+          state,
+        };
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(payload));
+        setLastBackupAt(now);
+      } catch (err) {
+        console.error("Error guardando backup local:", err);
+      }
+
+      // 2) Guardar en backend (como ya hacíamos antes)
+      try {
+        await fetch(`${API_URL}/estado?email=${encodeURIComponent(email)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(state),
+          signal: controller.signal,
+        });
       } catch (err) {
         if (err.name === "AbortError") return;
         console.error("Error guardando estado en backend:", err);
@@ -236,7 +290,8 @@ function useUserStorage(email) {
     };
   }, [email, state]);
 
-  return [state, setState];
+  // 👉 Ahora devolvemos también lastBackupAt
+  return [state, setState, lastBackupAt];
 }
 
 // ---- Layout ----
@@ -255,7 +310,15 @@ function Section({ title, desc, children, right }) {
   );
 }
 
-function TopBar({ email, onLogout }) {
+function TopBar({ email, onLogout, lastBackupAt }) {
+  // Texto que muestra la fecha/hora del último backup local
+  const backupLabel = lastBackupAt
+    ? `Último backup local: ${new Date(lastBackupAt).toLocaleString("es-AR", {
+        dateStyle: "short",
+        timeStyle: "short",
+      })}`
+    : "Aún sin backup local";
+
   return (
     <header className="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200 sticky top-0 z-30">
       <div className="flex items-center gap-3">
@@ -270,9 +333,14 @@ function TopBar({ email, onLogout }) {
         </div>
       </div>
       <div className="flex items-center gap-3 text-sm">
-        <span className="px-2 py-1 rounded-xl bg-slate-100 text-slate-700">
-          {email}
-        </span>
+        <div className="flex flex-col items-end">
+          <span className="px-2 py-1 rounded-xl bg-slate-100 text-slate-700 text-xs">
+            {email}
+          </span>
+          <span className="text-[11px] text-slate-400 mt-0.5">
+            {backupLabel}
+          </span>
+        </div>
         <button
           onClick={onLogout}
           className="px-3 py-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 transition"
@@ -1499,14 +1567,26 @@ function ComprasGastos({ data, setData }) {
   const agregar = () => {
     const nombreProveedor = proveedor.trim();
     const n = parseMoneyInput(monto);
+
     if (!nombreProveedor) {
       alert("Ingresa el proveedor");
       return;
     }
-    if (!isFinite(n) || n <= 0) {
-      alert("Ingresa un monto válido");
+
+    // No aceptamos 0 nunca
+    if (!isFinite(n) || n === 0) {
+      alert("Ingresa un monto distinto de 0");
       return;
     }
+
+    // Para GASTO el monto debe ser positivo
+    if (tipo === "gasto" && n < 0) {
+      alert(
+        'Para un "Gasto" el monto debe ser positivo. Si querés registrar una nota de crédito usá tipo "Compra" con monto negativo.'
+      );
+      return;
+    }
+
     const item = {
       id: uid(),
       fecha: new Date().toISOString(),
@@ -1601,13 +1681,18 @@ function ComprasGastos({ data, setData }) {
           value={descripcion}
           onChange={(e) => setDescripcion(e.target.value)}
         />
-        <input
-          type="text"
-          className="border rounded-xl px-3 py-2"
-          placeholder="Monto (ej: 1234,50)"
-          value={monto}
-          onChange={(e) => setMonto(e.target.value)}
-        />
+        <div className="flex flex-col">
+          <input
+            type="text"
+            className="border rounded-xl px-3 py-2"
+            placeholder="Monto (ej: 1234,50)"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+          />
+          <span className="text-xs text-slate-500 mt-1">
+            Para una nota de crédito, seleccioná tipo "Compra" y usa un monto negativo.
+          </span>
+        </div>
       </div>
 
       <div className="overflow-auto max-h-[50vh] border rounded-2xl bg-slate-50/40">
@@ -2738,12 +2823,19 @@ function RankingVentas({ email }) {
 }
 
 // ---- Fiados ----
+// ---- Fiados ----
+// ---- Fiados ----
 function Fiados({ data, setData }) {
   const personas = data.fiados || [];
   const productos = data.productos || [];
 
   const [abonoNombre, setAbonoNombre] = useState("");
   const [abonoMonto, setAbonoMonto] = useState("");
+  const [abonoPassword, setAbonoPassword] = useState(""); // NUEVO: password abono
+
+  // NUEVO: estado para eliminar un fiado con contraseña
+  const [deleteTarget, setDeleteTarget] = useState(null); // persona a eliminar
+  const [deletePassword, setDeletePassword] = useState("");
 
   const personasConSaldo = useMemo(
     () =>
@@ -2756,11 +2848,21 @@ function Fiados({ data, setData }) {
     [personas, productos]
   );
 
+  const totalFiados = useMemo(
+    () =>
+      personasConSaldo.reduce(
+        (acc, p) => acc + (p.saldo || 0),
+        0
+      ),
+    [personasConSaldo]
+  );
+
   const nombresFiados = personasConSaldo.map((p) => p.nombre);
 
   const agregarAbono = () => {
     const nombre = abonoNombre.trim();
     const monto = parseMoneyInput(abonoMonto);
+
     if (!nombre) {
       alert("Ingresa el nombre de la persona.");
       return;
@@ -2777,9 +2879,14 @@ function Fiados({ data, setData }) {
       return;
     }
 
-    const pass = prompt("Ingresa la contraseña para registrar el abono:");
-    if (pass !== "19256436") {
-      alert("Contraseña incorrecta o operación cancelada. No se registró el abono.");
+    // Validar contraseña con input type="password"
+    const PASSWORD_ABONO = "19256436";
+    if (!abonoPassword) {
+      alert("Ingresa la contraseña para registrar el abono.");
+      return;
+    }
+    if (abonoPassword !== PASSWORD_ABONO) {
+      alert("Contraseña incorrecta. No se registró el abono.");
       return;
     }
 
@@ -2800,6 +2907,7 @@ function Fiados({ data, setData }) {
         };
       });
 
+      // Eliminar personas cuyo saldo quede en 0
       fiados = fiados.filter(
         (p) => computeSaldoPersona(p, productosS) > 0.0001
       );
@@ -2809,7 +2917,38 @@ function Fiados({ data, setData }) {
 
     setAbonoNombre("");
     setAbonoMonto("");
+    setAbonoPassword(""); // limpiar password tras éxito
     alert("Abono registrado.");
+  };
+
+  // MODAL eliminar fiado
+  const abrirModalEliminar = (persona) => {
+    setDeleteTarget(persona);
+    setDeletePassword("");
+  };
+
+  const cerrarModalEliminar = () => {
+    setDeleteTarget(null);
+    setDeletePassword("");
+  };
+
+  const confirmarEliminarFiado = () => {
+    const PASSWORD_ELIMINAR = "Cmarie1$";
+
+    if (deletePassword !== PASSWORD_ELIMINAR) {
+      alert("Contraseña incorrecta. No se eliminó el fiado.");
+      return;
+    }
+
+    setData((s) => ({
+      ...s,
+      fiados: (s.fiados || []).filter(
+        (p) => p.id !== (deleteTarget && deleteTarget.id)
+      ),
+    }));
+
+    cerrarModalEliminar();
+    alert("Fiado eliminado por completo.");
   };
 
   return (
@@ -2835,6 +2974,7 @@ function Fiados({ data, setData }) {
             ))}
           </datalist>
         </div>
+
         <div className="flex flex-col gap-1 md:col-span-1">
           <label className="text-sm text-slate-700">
             Importe del abono
@@ -2851,14 +2991,32 @@ function Fiados({ data, setData }) {
             contraseña.
           </span>
         </div>
-        <div className="flex items-end md:col-span-1">
+
+        <div className="flex flex-col gap-1 md:col-span-1">
+          <label className="text-sm text-slate-700">
+            Contraseña para registrar abono
+          </label>
+          <input
+            type="password"
+            className="border rounded-xl px-3 py-2"
+            placeholder="Ingresa la contraseña"
+            value={abonoPassword}
+            onChange={(e) => setAbonoPassword(e.target.value)}
+          />
           <button
             onClick={agregarAbono}
-            className="w-full bg-sky-600 text-white rounded-xl py-2 hover:bg-sky-700 mt-2 md:mt-0"
+            className="w-full bg-sky-600 text-white rounded-xl py-2 hover:bg-sky-700 mt-2"
           >
             Agregar abono
           </button>
         </div>
+      </div>
+
+      <div className="mb-3 text-sm text-slate-700">
+        Total fiados activos:{" "}
+        <span className="font-semibold">
+          {currency(totalFiados)}
+        </span>
       </div>
 
       {personasConSaldo.length === 0 ? (
@@ -2880,12 +3038,20 @@ function Fiados({ data, setData }) {
               >
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-lg font-semibold">{p.nombre}</h3>
-                  <span className="text-sm text-slate-600">
-                    Saldo actual:{" "}
-                    <span className="font-semibold">
-                      {currency(p.saldo)}
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-sm text-slate-600">
+                      Saldo actual:{" "}
+                      <span className="font-semibold">
+                        {currency(p.saldo)}
+                      </span>
                     </span>
-                  </span>
+                    <button
+                      onClick={() => abrirModalEliminar(p)}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Eliminar fiado
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid md:grid-cols-2 gap-4">
@@ -2913,13 +3079,11 @@ function Fiados({ data, setData }) {
                               (it, idx) => {
                                 const prod = mapProd.get(it.ean);
                                 const nombreProd =
-                                  prod?.nombre ||
-                                  `Producto sin nombre`;
+                                  prod?.nombre || `Producto sin nombre`;
                                 const qty = Number(it.qty) || 0;
 
                                 const precioBase =
-                                  typeof it.precioUnitario ===
-                                  "number"
+                                  typeof it.precioUnitario === "number"
                                     ? it.precioUnitario
                                     : prod
                                     ? Number(prod.precio) || 0
@@ -2934,12 +3098,9 @@ function Fiados({ data, setData }) {
                                     className="flex justify-between gap-2"
                                   >
                                     <span className="truncate">
-                                      EAN {it.ean} - x{qty}{" "}
-                                      {nombreProd}
+                                      EAN {it.ean} - x{qty} {nombreProd}
                                     </span>
-                                    <span>
-                                      {currency(sub)}
-                                    </span>
+                                    <span>{currency(sub)}</span>
                                   </div>
                                 );
                               }
@@ -2958,9 +3119,7 @@ function Fiados({ data, setData }) {
                                     timeStyle: "short",
                                   })}
                                 </td>
-                                <td className="p-1.5">
-                                  {detalle}
-                                </td>
+                                <td className="p-1.5">{detalle}</td>
                                 <td className="p-1.5 text-right align-top whitespace-nowrap">
                                   {currency(totalCargo)}
                                 </td>
@@ -2981,6 +3140,7 @@ function Fiados({ data, setData }) {
                       </table>
                     </div>
                   </div>
+
                   <div>
                     <h4 className="text-sm font-semibold text-slate-700 mb-1">
                       Abonos
@@ -3034,6 +3194,56 @@ function Fiados({ data, setData }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* MODAL para eliminar fiado con contraseña */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-5">
+            <h3 className="text-lg font-semibold mb-2">
+              Eliminar fiado
+            </h3>
+            <p className="text-sm text-slate-600 mb-3">
+              Vas a eliminar por completo el fiado de{" "}
+              <span className="font-semibold">
+                {deleteTarget.nombre}
+              </span>
+              . Esta acción no se puede deshacer.
+            </p>
+            <p className="text-sm text-slate-600 mb-3">
+              Saldo actual:{" "}
+              <span className="font-semibold">
+                {currency(
+                  computeSaldoPersona(deleteTarget, productos)
+                )}
+              </span>
+            </p>
+            <label className="block text-sm text-slate-700 mb-1">
+              Contraseña
+            </label>
+            <input
+              type="password"
+              className="w-full border rounded-xl px-3 py-2 mb-4"
+              placeholder="Ingresa la contraseña"
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={cerrarModalEliminar}
+                className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmarEliminarFiado}
+                className="px-3 py-1.5 rounded-xl text-sm bg-red-600 text-white hover:bg-red-700"
+              >
+                Eliminar fiado
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </Section>
@@ -3093,7 +3303,7 @@ export default function DespensaApp() {
   const [email, setEmail] = useState(
     localStorage.getItem("despensa:lastEmail") || ""
   );
-  const [data, setData] = useUserStorage(email);
+  const [data, setData, lastBackupAt] = useUserStorage(email);
   const [tab, setTab] = useState("productos");
 
   useEffect(() => {
@@ -3106,7 +3316,7 @@ export default function DespensaApp() {
     <div className="min-h-screen bg-slate-100 text-slate-900">
       {email ? (
         <>
-          <TopBar email={email} onLogout={logout} />
+          <TopBar email={email} onLogout={logout} lastBackupAt={lastBackupAt} />
           <Nav tab={tab} setTab={setTab} />
           <main className="max-w-6xl mx-auto p-4 space-y-4">
             {tab === "productos" && (
@@ -3137,7 +3347,7 @@ export default function DespensaApp() {
         <Login onLogin={setEmail} />
       )}
       <footer className="text-center text-xs text-slate-400 py-6">
-        DespensaApp v1.1
+        DespensaApp v1.1 Datos Protegidos
       </footer>
     </div>
   );
