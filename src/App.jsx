@@ -1380,49 +1380,66 @@ function NuevaVenta({ data, setData }) {
             </button>
           </div>
         </Section>
-        <VentasRecientes data={data} setData={setData} />
+        <VentasRecientes
+  ventas={data.ventas}
+  cierres={data.cierres || {}}
+  setData={setData}
+/>
+
       </div>
     </div>
   );
 }
 
 // ---- Ventas recientes ----
-function VentasRecientes({ data, setData }) {
-  const cierres = data.cierres || {};
+const VentasRecientes = React.memo(function VentasRecientes({
+  ventas,
+  cierres,
+  setData,
+}) {
+  const [limit, setLimit] = useState(50);
+
+  const ventasMostradas = useMemo(() => {
+    const arr = Array.isArray(ventas) ? ventas : [];
+    return arr.slice(0, limit);
+  }, [ventas, limit]);
+
+  useEffect(() => {
+    // si entran ventas nuevas, mantenemos el límite (no reseteamos)
+    // si querés que al volver a la pestaña vuelva a 50, se puede cambiar
+  }, [ventas]);
 
   const eliminarVenta = (id) => {
-    const venta = data.ventas.find((v) => v.id === id);
+    const venta = (ventas || []).find((v) => v.id === id);
     if (
       venta &&
       venta.cierreFecha &&
+      cierres &&
       cierres[venta.cierreFecha] &&
       cierres[venta.cierreFecha].cerrado
     ) {
-      alert(
-        "Esta venta pertenece a un día ya cerrado y no puede eliminarse."
-      );
+      alert("Esta venta pertenece a un día ya cerrado y no puede eliminarse.");
       return;
     }
 
     if (!confirm("¿Eliminar esta venta?")) return;
     setData((s) => ({
       ...s,
-      ventas: s.ventas.filter((v) => v.id !== id),
+      ventas: (s.ventas || []).filter((v) => v.id !== id),
     }));
   };
 
   const actualizarMetodo = (id, metodo) => {
-    const venta = data.ventas.find((v) => v.id === id);
+    const venta = (ventas || []).find((v) => v.id === id);
     if (!venta) return;
 
     if (
       venta.cierreFecha &&
+      cierres &&
       cierres[venta.cierreFecha] &&
       cierres[venta.cierreFecha].cerrado
     ) {
-      alert(
-        "Esta venta pertenece a un día ya cerrado y no puede modificarse."
-      );
+      alert("Esta venta pertenece a un día ya cerrado y no puede modificarse.");
       return;
     }
 
@@ -1435,7 +1452,7 @@ function VentasRecientes({ data, setData }) {
 
     setData((s) => ({
       ...s,
-      ventas: s.ventas.map((v) =>
+      ventas: (s.ventas || []).map((v) =>
         v.id === id
           ? {
               ...v,
@@ -1453,20 +1470,20 @@ function VentasRecientes({ data, setData }) {
   return (
     <Section title="Ventas recientes">
       <div className="space-y-3 max-h-[30vh] overflow-auto pr-1">
-        {data.ventas.length === 0 && (
+        {(ventas || []).length === 0 && (
           <p className="text-sm text-slate-500">
-            Aún no hay ventas registradas (se muestran solo las que no son
-            fiado).
+            Aún no hay ventas registradas (se muestran solo las que no son fiado).
           </p>
         )}
-        {data.ventas.map((v) => {
+
+        {ventasMostradas.map((v) => {
           const bloqueada =
             v.cierreFecha &&
+            cierres &&
             cierres[v.cierreFecha] &&
             cierres[v.cierreFecha].cerrado;
 
-          const esMultipago =
-            Array.isArray(v.pagos) && v.pagos.length > 1;
+          const esMultipago = Array.isArray(v.pagos) && v.pagos.length > 1;
 
           const totalVenta =
             Array.isArray(v.pagos) && v.pagos.length
@@ -1482,6 +1499,7 @@ function VentasRecientes({ data, setData }) {
                     timeStyle: "short",
                   })}
                 </span>
+
                 {esMultipago ? (
                   <span className="px-2 py-1 rounded-full bg-sky-50 text-sky-700 text-xs">
                     Múltiples métodos
@@ -1490,9 +1508,7 @@ function VentasRecientes({ data, setData }) {
                   <select
                     className="border rounded-lg px-2 py-1 text-xs uppercase disabled:bg-slate-100 disabled:text-slate-400"
                     value={v.metodo}
-                    onChange={(e) =>
-                      actualizarMetodo(v.id, e.target.value)
-                    }
+                    onChange={(e) => actualizarMetodo(v.id, e.target.value)}
                     disabled={bloqueada}
                   >
                     <option value="efectivo">efectivo</option>
@@ -1501,12 +1517,10 @@ function VentasRecientes({ data, setData }) {
                   </select>
                 )}
               </div>
+
               <div className="text-sm">
                 {v.items.map((i) => (
-                  <div
-                    key={i.id}
-                    className="flex items-center justify-between"
-                  >
+                  <div key={i.id} className="flex items-center justify-between">
                     <span className="truncate mr-2">
                       {i.nombre} x{i.qty}
                     </span>
@@ -1519,9 +1533,7 @@ function VentasRecientes({ data, setData }) {
                 <div className="mt-2 text-xs text-slate-600">
                   Métodos:{" "}
                   {v.pagos
-                    .map(
-                      (p) => `${p.metodo} ${currency(p.monto || 0)}`
-                    )
+                    .map((p) => `${p.metodo} ${currency(p.monto || 0)}`)
                     .join(" · ")}
                 </div>
               )}
@@ -1530,6 +1542,7 @@ function VentasRecientes({ data, setData }) {
                 <span>Total</span>
                 <span>{currency(totalVenta)}</span>
               </div>
+
               <div className="flex justify-between items-center mt-2">
                 <button
                   onClick={() => eliminarVenta(v.id)}
@@ -1552,10 +1565,19 @@ function VentasRecientes({ data, setData }) {
             </div>
           );
         })}
+
+        {(ventas || []).length > limit && (
+          <button
+            onClick={() => setLimit((n) => n + 50)}
+            className="w-full mt-2 px-3 py-2 rounded-xl border hover:bg-slate-50 text-sm"
+          >
+            Cargar 50 más
+          </button>
+        )}
       </div>
     </Section>
   );
-}
+});
 
 // ---- Compras / Gastos ----
 function ComprasGastos({ data, setData }) {
