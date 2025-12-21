@@ -1380,49 +1380,66 @@ function NuevaVenta({ data, setData }) {
             </button>
           </div>
         </Section>
-        <VentasRecientes data={data} setData={setData} />
+        <VentasRecientes
+  ventas={data.ventas}
+  cierres={data.cierres || {}}
+  setData={setData}
+/>
+
       </div>
     </div>
   );
 }
 
 // ---- Ventas recientes ----
-function VentasRecientes({ data, setData }) {
-  const cierres = data.cierres || {};
+const VentasRecientes = React.memo(function VentasRecientes({
+  ventas,
+  cierres,
+  setData,
+}) {
+  const [limit, setLimit] = useState(50);
+
+  const ventasMostradas = useMemo(() => {
+    const arr = Array.isArray(ventas) ? ventas : [];
+    return arr.slice(0, limit);
+  }, [ventas, limit]);
+
+  useEffect(() => {
+    // si entran ventas nuevas, mantenemos el límite (no reseteamos)
+    // si querés que al volver a la pestaña vuelva a 50, se puede cambiar
+  }, [ventas]);
 
   const eliminarVenta = (id) => {
-    const venta = data.ventas.find((v) => v.id === id);
+    const venta = (ventas || []).find((v) => v.id === id);
     if (
       venta &&
       venta.cierreFecha &&
+      cierres &&
       cierres[venta.cierreFecha] &&
       cierres[venta.cierreFecha].cerrado
     ) {
-      alert(
-        "Esta venta pertenece a un día ya cerrado y no puede eliminarse."
-      );
+      alert("Esta venta pertenece a un día ya cerrado y no puede eliminarse.");
       return;
     }
 
     if (!confirm("¿Eliminar esta venta?")) return;
     setData((s) => ({
       ...s,
-      ventas: s.ventas.filter((v) => v.id !== id),
+      ventas: (s.ventas || []).filter((v) => v.id !== id),
     }));
   };
 
   const actualizarMetodo = (id, metodo) => {
-    const venta = data.ventas.find((v) => v.id === id);
+    const venta = (ventas || []).find((v) => v.id === id);
     if (!venta) return;
 
     if (
       venta.cierreFecha &&
+      cierres &&
       cierres[venta.cierreFecha] &&
       cierres[venta.cierreFecha].cerrado
     ) {
-      alert(
-        "Esta venta pertenece a un día ya cerrado y no puede modificarse."
-      );
+      alert("Esta venta pertenece a un día ya cerrado y no puede modificarse.");
       return;
     }
 
@@ -1435,7 +1452,7 @@ function VentasRecientes({ data, setData }) {
 
     setData((s) => ({
       ...s,
-      ventas: s.ventas.map((v) =>
+      ventas: (s.ventas || []).map((v) =>
         v.id === id
           ? {
               ...v,
@@ -1453,20 +1470,20 @@ function VentasRecientes({ data, setData }) {
   return (
     <Section title="Ventas recientes">
       <div className="space-y-3 max-h-[30vh] overflow-auto pr-1">
-        {data.ventas.length === 0 && (
+        {(ventas || []).length === 0 && (
           <p className="text-sm text-slate-500">
-            Aún no hay ventas registradas (se muestran solo las que no son
-            fiado).
+            Aún no hay ventas registradas (se muestran solo las que no son fiado).
           </p>
         )}
-        {data.ventas.map((v) => {
+
+        {ventasMostradas.map((v) => {
           const bloqueada =
             v.cierreFecha &&
+            cierres &&
             cierres[v.cierreFecha] &&
             cierres[v.cierreFecha].cerrado;
 
-          const esMultipago =
-            Array.isArray(v.pagos) && v.pagos.length > 1;
+          const esMultipago = Array.isArray(v.pagos) && v.pagos.length > 1;
 
           const totalVenta =
             Array.isArray(v.pagos) && v.pagos.length
@@ -1482,6 +1499,7 @@ function VentasRecientes({ data, setData }) {
                     timeStyle: "short",
                   })}
                 </span>
+
                 {esMultipago ? (
                   <span className="px-2 py-1 rounded-full bg-sky-50 text-sky-700 text-xs">
                     Múltiples métodos
@@ -1490,9 +1508,7 @@ function VentasRecientes({ data, setData }) {
                   <select
                     className="border rounded-lg px-2 py-1 text-xs uppercase disabled:bg-slate-100 disabled:text-slate-400"
                     value={v.metodo}
-                    onChange={(e) =>
-                      actualizarMetodo(v.id, e.target.value)
-                    }
+                    onChange={(e) => actualizarMetodo(v.id, e.target.value)}
                     disabled={bloqueada}
                   >
                     <option value="efectivo">efectivo</option>
@@ -1501,12 +1517,10 @@ function VentasRecientes({ data, setData }) {
                   </select>
                 )}
               </div>
+
               <div className="text-sm">
                 {v.items.map((i) => (
-                  <div
-                    key={i.id}
-                    className="flex items-center justify-between"
-                  >
+                  <div key={i.id} className="flex items-center justify-between">
                     <span className="truncate mr-2">
                       {i.nombre} x{i.qty}
                     </span>
@@ -1519,9 +1533,7 @@ function VentasRecientes({ data, setData }) {
                 <div className="mt-2 text-xs text-slate-600">
                   Métodos:{" "}
                   {v.pagos
-                    .map(
-                      (p) => `${p.metodo} ${currency(p.monto || 0)}`
-                    )
+                    .map((p) => `${p.metodo} ${currency(p.monto || 0)}`)
                     .join(" · ")}
                 </div>
               )}
@@ -1530,6 +1542,7 @@ function VentasRecientes({ data, setData }) {
                 <span>Total</span>
                 <span>{currency(totalVenta)}</span>
               </div>
+
               <div className="flex justify-between items-center mt-2">
                 <button
                   onClick={() => eliminarVenta(v.id)}
@@ -1552,10 +1565,19 @@ function VentasRecientes({ data, setData }) {
             </div>
           );
         })}
+
+        {(ventas || []).length > limit && (
+          <button
+            onClick={() => setLimit((n) => n + 50)}
+            className="w-full mt-2 px-3 py-2 rounded-xl border hover:bg-slate-50 text-sm"
+          >
+            Cargar 50 más
+          </button>
+        )}
       </div>
     </Section>
   );
-}
+});
 
 // ---- Compras / Gastos ----
 function ComprasGastos({ data, setData }) {
@@ -2310,6 +2332,9 @@ function ResumenHistorico({ data }) {
   const [desde, setDesde] = useState(todayISO);
   const [hasta, setHasta] = useState(todayISO);
 
+  // NUEVO: control de proveedores expandidos
+  const [expanded, setExpanded] = useState(() => new Set());
+
   const { valido, resumen } = useMemo(() => {
     if (!desde || !hasta) return { valido: false, resumen: null };
     if (desde > hasta) return { valido: false, resumen: null };
@@ -2317,7 +2342,7 @@ function ResumenHistorico({ data }) {
     const d0 = new Date(desde + "T00:00:00").getTime();
     const d1 = new Date(hasta + "T23:59:59.999").getTime();
 
-    const ventasRango = data.ventas.filter((v) => {
+    const ventasRango = (data.ventas || []).filter((v) => {
       const t = new Date(v.fecha).getTime();
       return t >= d0 && t <= d1;
     });
@@ -2327,18 +2352,12 @@ function ResumenHistorico({ data }) {
       return t >= d0 && t <= d1;
     });
 
-    const totalVentas = ventasRango.reduce(
-      (acc, v) => {
-        if (Array.isArray(v.pagos) && v.pagos.length) {
-          return (
-            acc +
-            v.pagos.reduce((x, p) => x + (p.monto || 0), 0)
-          );
-        }
-        return acc + (v.total || 0);
-      },
-      0
-    );
+    const totalVentas = ventasRango.reduce((acc, v) => {
+      if (Array.isArray(v.pagos) && v.pagos.length) {
+        return acc + v.pagos.reduce((x, p) => x + (p.monto || 0), 0);
+      }
+      return acc + (v.total || 0);
+    }, 0);
 
     const totalCompras = gastosRango
       .filter((g) => g.tipo === "compra")
@@ -2350,11 +2369,49 @@ function ResumenHistorico({ data }) {
 
     const totalGeneral = totalVentas - totalCompras - totalGastos;
 
+    // NUEVO: agrupación por proveedor + tipo
+    // (lo separo por tipo para que veas compras y gastos independientes)
+    const groupedMap = new Map();
+    for (const g of gastosRango) {
+      const proveedor = (g.proveedor || "(Sin proveedor)").trim() || "(Sin proveedor)";
+      const tipo = g.tipo || "gasto";
+      const key = `${tipo}||${proveedor.toLowerCase()}`;
+
+      if (!groupedMap.has(key)) {
+        groupedMap.set(key, {
+          tipo,
+          proveedor,
+          total: 0,
+          count: 0,
+          items: [],
+        });
+      }
+
+      const rec = groupedMap.get(key);
+      rec.total += Number(g.monto) || 0;
+      rec.count += 1;
+      rec.items.push(g);
+    }
+
+    const grupos = Array.from(groupedMap.values()).sort((a, b) => {
+      // ordenar: compras primero, luego gastos; dentro por total desc
+      const tA = a.tipo === "compra" ? 0 : 1;
+      const tB = b.tipo === "compra" ? 0 : 1;
+      if (tA !== tB) return tA - tB;
+      return (b.total || 0) - (a.total || 0);
+    });
+
+    // dentro de cada grupo, ordenar items por fecha desc
+    grupos.forEach((g) =>
+      g.items.sort((x, y) => new Date(y.fecha) - new Date(x.fecha))
+    );
+
     return {
       valido: true,
       resumen: {
         ventasRango,
         gastosRango,
+        grupos,
         totalVentas,
         totalCompras,
         totalGastos,
@@ -2362,6 +2419,49 @@ function ResumenHistorico({ data }) {
       },
     };
   }, [data.ventas, data.gastos, desde, hasta]);
+
+  const toggleExpand = (key) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  // Exportar “Excel” (CSV compatible)
+  const exportExcelCSV = () => {
+    if (!valido || !resumen) {
+      alert("Configura un rango de fechas válido antes de exportar.");
+      return;
+    }
+
+    const { grupos, totalVentas, totalCompras, totalGastos, totalGeneral } = resumen;
+
+    const bom = "\uFEFF"; // para que Excel respete acentos
+    const sep = ";"; // Excel ES suele abrir mejor con ;
+
+    const header = [
+      `Resumen histórico (período ${desde} a ${hasta})`,
+      "",
+      `Total Ventas${sep}${totalVentas}`,
+      `Total Compras${sep}${totalCompras}`,
+      `Total Gastos${sep}${totalGastos}`,
+      `Total General (Ventas-Compras-Gastos)${sep}${totalGeneral}`,
+      "",
+      ["Tipo", "Proveedor", "Cantidad Registros", "Total"].join(sep),
+    ];
+
+    const rows = grupos.map((g) => [
+      g.tipo,
+      `"${String(g.proveedor).replace(/"/g, '""')}"`,
+      g.count,
+      g.total,
+    ].join(sep));
+
+    const csv = bom + [...header, ...rows].join("\n");
+    download(`resumen-historico-${desde}-a-${hasta}.csv`, csv);
+  };
 
   const exportPdf = () => {
     if (!valido || !resumen) {
@@ -2374,7 +2474,7 @@ function ResumenHistorico({ data }) {
       totalCompras,
       totalGastos,
       totalGeneral,
-      gastosRango,
+      grupos,
     } = resumen;
 
     const totalVentasStr = currency(totalVentas);
@@ -2382,22 +2482,18 @@ function ResumenHistorico({ data }) {
     const totalGastosStr = currency(totalGastos);
     const totalGeneralStr = currency(totalGeneral);
 
-    const rowsHtml = gastosRango
+    const rowsHtml = grupos
       .map((g) => {
-        const fecha = new Date(g.fecha);
-        const fechaStr = fecha.toLocaleDateString("es-AR");
-        const horaStr = fecha.toLocaleTimeString("es-AR", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
+        const tipo = g.tipo;
+        const prov = escapeHtml(g.proveedor);
+        const cant = g.count;
+        const total = currency(g.total);
         return `
           <tr>
-            <td>${fechaStr}</td>
-            <td>${horaStr}</td>
-            <td>${g.tipo}</td>
-            <td>${escapeHtml(g.proveedor)}</td>
-            <td>${escapeHtml(g.descripcion || "")}</td>
-            <td style="text-align:right;">${currency(g.monto)}</td>
+            <td>${tipo}</td>
+            <td>${prov}</td>
+            <td style="text-align:right;">${cant}</td>
+            <td style="text-align:right;">${total}</td>
           </tr>
         `;
       })
@@ -2427,67 +2523,19 @@ function ResumenHistorico({ data }) {
             font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             font-size: 12px;
           }
-          h1 {
-            font-size: 20px;
-            margin: 0 0 4px 0;
-          }
-          .range {
-            font-size: 13px;
-            color: #4b5563;
-            margin-top: 2px;
-            margin-bottom: 16px;
-          }
-          .grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 8px;
-            margin-bottom: 18px;
-          }
-          .card {
-            border-radius: 10px;
-            border: 1px solid #e5e7eb;
-            padding: 8px 10px;
-            background: #f9fafb;
-          }
-          .card.primary {
-            background: #eef2ff;
-            border-color: #c7d2fe;
-          }
-          .card.accent {
-            background: #ecfdf5;
-            border-color: #6ee7b7;
-          }
-          .card-label {
-            font-size: 11px;
-            color: #6b7280;
-            margin-bottom: 4px;
-          }
-          .card-value {
-            font-size: 17px;
-            font-weight: 600;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 8px;
-          }
-          th, td {
-            border: 1px solid #e5e7eb;
-            padding: 4px 6px;
-          }
-          th {
-            background: #f3f4f6;
-            font-size: 11px;
-            text-align: left;
-          }
-          .section-title {
-            font-size: 13px;
-            font-weight: 600;
-            margin-top: 16px;
-          }
-          @page {
-            margin: 12mm;
-          }
+          h1 { font-size: 20px; margin: 0 0 4px 0; }
+          .range { font-size: 13px; color: #4b5563; margin: 2px 0 16px 0; }
+          .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 18px; }
+          .card { border-radius: 10px; border: 1px solid #e5e7eb; padding: 8px 10px; background: #f9fafb; }
+          .card.primary { background: #eef2ff; border-color: #c7d2fe; }
+          .card.accent { background: #ecfdf5; border-color: #6ee7b7; }
+          .card-label { font-size: 11px; color: #6b7280; margin-bottom: 4px; }
+          .card-value { font-size: 17px; font-weight: 600; }
+          table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+          th, td { border: 1px solid #e5e7eb; padding: 4px 6px; }
+          th { background: #f3f4f6; font-size: 11px; text-align: left; }
+          .section-title { font-size: 13px; font-weight: 600; margin-top: 16px; }
+          @page { margin: 12mm; }
         </style>
       </head>
       <body onload="window.print()">
@@ -2515,22 +2563,20 @@ function ResumenHistorico({ data }) {
           </div>
         </div>
 
-        <div class="section-title">Detalle de compras y gastos</div>
+        <div class="section-title">Compras y gastos agrupados por proveedor</div>
         <table>
           <thead>
             <tr>
-              <th>Fecha</th>
-              <th>Hora</th>
               <th>Tipo</th>
               <th>Proveedor</th>
-              <th>Descripción</th>
-              <th style="text-align:right;">Monto</th>
+              <th style="text-align:right;">Cantidad</th>
+              <th style="text-align:right;">Total</th>
             </tr>
           </thead>
           <tbody>
             ${
               rowsHtml ||
-              `<tr><td colspan="6" style="text-align:center;color:#9ca3af;">No hay compras ni gastos en este rango.</td></tr>`
+              `<tr><td colspan="4" style="text-align:center;color:#9ca3af;">No hay compras ni gastos en este rango.</td></tr>`
             }
           </tbody>
         </table>
@@ -2548,12 +2594,20 @@ function ResumenHistorico({ data }) {
       title="Resumen histórico"
       desc="Reporte de ventas, compras y gastos por rango de fechas."
       right={
-        <button
-          onClick={exportPdf}
-          className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50"
-        >
-          Imprimir / PDF
-        </button>
+        <div className="flex flex-wrap gap-2 justify-end">
+          <button
+            onClick={exportExcelCSV}
+            className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50"
+          >
+            Exportar Excel (CSV)
+          </button>
+          <button
+            onClick={exportPdf}
+            className="px-3 py-1.5 rounded-xl border text-sm hover:bg-slate-50"
+          >
+            Imprimir / PDF
+          </button>
+        </div>
       }
     >
       <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -2579,8 +2633,7 @@ function ResumenHistorico({ data }) {
 
       {!valido && (
         <p className="text-sm text-red-600 mb-4">
-          Verifica que ambas fechas estén completas y que “Desde” no sea mayor
-          que “Hasta”.
+          Verifica que ambas fechas estén completas y que “Desde” no sea mayor que “Hasta”.
         </p>
       )}
 
@@ -2610,49 +2663,98 @@ function ResumenHistorico({ data }) {
           </div>
 
           <h3 className="text-sm font-semibold text-slate-700 mb-2">
-            Compras y gastos en el rango
+            Compras y gastos agrupados por proveedor
           </h3>
-          <div className="overflow-auto max-h-[40vh] border rounded-2xl bg-slate-50/40">
-            <table className="w-full text-sm">
+
+          <div className="overflow-auto max-h-[50vh] border rounded-2xl bg-slate-50/40">
+            <table className="w-full text-sm min-w-[800px]">
               <thead className="bg-slate-100 sticky top-0">
                 <tr>
-                  <th className="text-left p-2">Fecha</th>
-                  <th className="text-left p-2">Hora</th>
                   <th className="text-left p-2">Tipo</th>
                   <th className="text-left p-2">Proveedor</th>
-                  <th className="text-left p-2">Descripción</th>
-                  <th className="text-right p-2">Monto</th>
+                  <th className="text-right p-2">Registros</th>
+                  <th className="text-right p-2">Total</th>
+                  <th className="text-right p-2">Acción</th>
                 </tr>
               </thead>
+
               <tbody>
-                {resumen.gastosRango.map((g) => (
-                  <tr
-                    key={g.id}
-                    className="odd:bg-white even:bg-slate-50"
-                  >
-                    <td className="p-2">
-                      {new Date(g.fecha).toLocaleDateString("es-AR")}
-                    </td>
-                    <td className="p-2">
-                      {new Date(g.fecha).toLocaleTimeString("es-AR", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </td>
-                    <td className="p-2 capitalize">{g.tipo}</td>
-                    <td className="p-2">{g.proveedor}</td>
-                    <td className="p-2">{g.descripcion}</td>
-                    <td className="p-2 text-right">
-                      {currency(g.monto)}
-                    </td>
-                  </tr>
-                ))}
-                {!resumen.gastosRango.length && (
+                {resumen.grupos.map((g) => {
+                  const key = `${g.tipo}||${g.proveedor.toLowerCase()}`;
+                  const isOpen = expanded.has(key);
+                  return (
+                    <React.Fragment key={key}>
+                      <tr className="odd:bg-white even:bg-slate-50">
+                        <td className="p-2 capitalize">{g.tipo}</td>
+                        <td className="p-2">{g.proveedor}</td>
+                        <td className="p-2 text-right">{g.count}</td>
+                        <td className="p-2 text-right font-semibold">
+                          {currency(g.total)}
+                        </td>
+                        <td className="p-2 text-right">
+                          <button
+                            onClick={() => toggleExpand(key)}
+                            className="text-xs text-sky-700 hover:underline"
+                          >
+                            {isOpen ? "Ocultar detalle" : "Ver detalle"}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {isOpen && (
+                        <tr className="bg-white">
+                          <td colSpan={5} className="p-2">
+                            <div className="border rounded-xl bg-slate-50/40 overflow-auto max-h-52">
+                              <table className="w-full text-xs">
+                                <thead className="bg-slate-100 sticky top-0">
+                                  <tr>
+                                    <th className="text-left p-2">Fecha</th>
+                                    <th className="text-left p-2">Hora</th>
+                                    <th className="text-left p-2">Descripción</th>
+                                    <th className="text-right p-2">Monto</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {g.items.map((it) => (
+                                    <tr
+                                      key={it.id}
+                                      className="odd:bg-white even:bg-slate-50"
+                                    >
+                                      <td className="p-2">
+                                        {new Date(it.fecha).toLocaleDateString("es-AR")}
+                                      </td>
+                                      <td className="p-2">
+                                        {new Date(it.fecha).toLocaleTimeString("es-AR", {
+                                          hour: "2-digit",
+                                          minute: "2-digit",
+                                        })}
+                                      </td>
+                                      <td className="p-2">{it.descripcion || ""}</td>
+                                      <td className="p-2 text-right">
+                                        {currency(it.monto)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                  {!g.items.length && (
+                                    <tr>
+                                      <td colSpan={4} className="p-4 text-center text-slate-500">
+                                        Sin registros.
+                                      </td>
+                                    </tr>
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+
+                {!resumen.grupos.length && (
                   <tr>
-                    <td
-                      colSpan={6}
-                      className="p-6 text-center text-slate-500"
-                    >
+                    <td colSpan={5} className="p-6 text-center text-slate-500">
                       No hay compras ni gastos en este rango.
                     </td>
                   </tr>
